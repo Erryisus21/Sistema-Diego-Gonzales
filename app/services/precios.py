@@ -12,7 +12,7 @@ def obtener_precio_promedio(
 
     resultado = db.query(func.avg(HistorialPrecio.precio)).filter(
         HistorialPrecio.producto_id == producto_id,
-        HistorialPrecio.registrado_en >= desde
+        HistorialPrecio.fecha >= desde
     ).scalar()
 
     return float(resultado) if resultado else None
