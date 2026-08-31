@@ -12,8 +12,7 @@ class OfertaResponse(BaseModel):
     precio_actual: float
     precio_promedio: float
     descuento: float
-    es_relampago: bool
-    detectada_en: datetime
+    fecha_detectada: datetime
 
     class Config:
         from_attributes = True

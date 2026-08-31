@@ -5,7 +5,7 @@ from app.database import get_db
 from app.models import Producto, Oferta
 from app import schemas
 
-router = APIRouter()
+router = APIRouter(prefix="/busqueda")
 
 @router.get("/", response_model=list[schemas.OfertaResponse])
 def buscar_ofertas(
@@ -13,7 +13,6 @@ def buscar_ofertas(
     db: Session = Depends(get_db)
 ):
     resultados = db.query(Oferta).join(Producto).filter(
-        Oferta.activa == True,
         or_(
             Producto.nombre.ilike(f"%{q}%"),
             Producto.categoria.ilike(f"%{q}%"),
@@ -32,8 +31,7 @@ def buscar_ofertas(
             "precio_actual": o.precio_actual,
             "precio_promedio": o.precio_promedio,
             "descuento": o.descuento,
-            "es_relampago": o.es_relampago,
-            "detectada_en": o.detectada_en,
+            "fecha_detectada": o.fecha_detectada,
         }
         for o in resultados
     ]
