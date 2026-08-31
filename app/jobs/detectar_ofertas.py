@@ -1,5 +1,4 @@
 from app.productos import PRODUCTOS
-from app.scrapers.mercadolibre import scraper_mercadolibre
 from app.scrapers.ebay import scraper_ebay
 from app.scrapers.etsy import scraper_etsy
 from app.services.precios import obtener_precio_promedio, guardar_precio
@@ -13,7 +12,6 @@ DESCUENTO_MINIMO = 5.0  # % minimo para considerar oferta
 
 # Lista de scrapers disponibles (nombre_mostrar, funcion_scraper)
 SCRAPERS = [
-    ("MercadoLibre", scraper_mercadolibre),
     ("eBay", scraper_ebay),
     ("Etsy", scraper_etsy),
 ]
