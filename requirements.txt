@@ -6,3 +6,4 @@ apscheduler
 requests
 beautifulsoup4
 python-dotenv
+exponent_server_sdk==2.2.0
