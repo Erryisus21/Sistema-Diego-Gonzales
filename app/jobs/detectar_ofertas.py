@@ -40,13 +40,22 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
 
     guardar_precio(db, producto.id, item["precio"])
 
-    oferta = Oferta(
-        producto_id=producto.id,
-        precio_actual=item["precio"],
-        precio_promedio=precio_promedio,
-        descuento=descuento,
+    ultima_oferta = (
+        db.query(Oferta)
+        .filter(Oferta.producto_id == producto.id)
+        .order_by(Oferta.fecha_detectada.desc())
+        .first()
     )
-    db.add(oferta)
+
+    if not ultima_oferta or round(ultima_oferta.precio_actual, 2) != round(item["precio"], 2):
+        oferta = Oferta(
+            producto_id=producto.id,
+            precio_actual=item["precio"],
+            precio_promedio=precio_promedio,
+            descuento=descuento,
+        )
+        db.add(oferta)
+
     db.commit()
 
 
