@@ -5,7 +5,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.database import engine, Base
-from app.routers import busqueda, wishlist, categorias, push, producto_detalle
+from app.routers import busqueda, wishlist, categorias, push, producto_detalle, ofertas
 from app.jobs.detectar_ofertas import detectar_ofertas
 from app.jobs.detectar_bajadas_wishlist import detectar_bajadas
 
@@ -58,6 +58,7 @@ app.include_router(wishlist.router)
 app.include_router(categorias.router)
 app.include_router(push.router)
 app.include_router(producto_detalle.router)
+app.include_router(ofertas.router)
 
 
 @app.get("/")
@@ -65,34 +66,3 @@ def root():
     return {"mensaje": "SAVVR API activa"}
 
 
-@app.get("/ofertas/")
-def listar_ofertas():
-    """Endpoint de ofertas - reutiliza lógica de detectar_ofertas."""
-    from app.database import SessionLocal
-    from app.models import Oferta, Producto
-
-    db = SessionLocal()
-    try:
-        # Unir Oferta con Producto para obtener toda la info
-        ofertas = db.query(Oferta, Producto).join(
-            Producto, Oferta.producto_id == Producto.id
-        ).all()
-
-        resultado = []
-        for oferta, producto in ofertas:
-            resultado.append({
-                "id": oferta.id,
-                "producto_id": producto.id,
-                "producto": producto.nombre,
-                "url": producto.url,
-                "imagen_url": producto.imagen_url,
-                "tienda": producto.tienda,
-                "categoria": producto.categoria,
-                "precio_actual": oferta.precio_actual,
-                "precio_promedio": oferta.precio_promedio,
-                "descuento": oferta.descuento,
-            })
-
-        return resultado
-    finally:
-        db.close()

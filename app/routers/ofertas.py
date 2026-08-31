@@ -6,7 +6,7 @@ from app.database import get_db
 from app.models import Oferta, Producto
 from app import schemas  # lo creamos después
 
-router = APIRouter()
+router = APIRouter(prefix="/ofertas")
 
 @router.get("/", response_model=list[schemas.OfertaResponse])
 def listar_ofertas(
@@ -17,7 +17,7 @@ def listar_ofertas(
     limit: int = Query(20, description="Paginación: hasta"),
     db: Session = Depends(get_db)
 ):
-    query = db.query(Oferta).join(Producto).filter(Oferta.activa == True)
+    query = db.query(Oferta).join(Producto)
 
     if categoria:
         query = query.filter(Producto.categoria == categoria)
@@ -40,8 +40,7 @@ def listar_ofertas(
             "precio_actual": o.precio_actual,
             "precio_promedio": o.precio_promedio,
             "descuento": o.descuento,
-            "es_relampago": o.es_relampago,
-            "detectada_en": o.detectada_en,
+            "fecha_detectada": o.fecha_detectada,
         }
         for o in ofertas
     ]
