@@ -58,6 +58,10 @@ class PushToken(Base):
     plataforma = Column(String)  # 'ios' o 'android'
     fecha_registro = Column(DateTime, default=datetime.utcnow)
     activo = Column(Boolean, default=True)
+    # nullable=True temporalmente: puede haber tokens legados sin dueño hasta migrar push.py
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), index=True, nullable=True)
+
+    usuario = relationship("Usuario", back_populates="push_tokens")
 
 
 # NUEVO: registro de notificaciones enviadas (para no spamear)
@@ -83,6 +87,9 @@ class Usuario(Base):
 
     wishlist_items = relationship(
         "WishlistItem", back_populates="usuario", cascade="all, delete-orphan"
+    )
+    push_tokens = relationship(
+        "PushToken", back_populates="usuario", cascade="all, delete-orphan"
     )
 
 
