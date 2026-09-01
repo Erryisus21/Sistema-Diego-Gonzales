@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.database import Base
@@ -22,6 +22,7 @@ class Producto(Base):
 
     historial = relationship("HistorialPrecio", back_populates="producto")
     ofertas = relationship("Oferta", back_populates="producto")
+    wishlist_items = relationship("WishlistItem", back_populates="producto")
 
 
 class HistorialPrecio(Base):
@@ -68,3 +69,34 @@ class NotificacionEnviada(Base):
     token_id = Column(Integer, ForeignKey("push_tokens.id"))
     precio_notificado = Column(Float)
     fecha = Column(DateTime, default=datetime.utcnow)
+
+
+class Usuario(Base):
+    __tablename__ = "usuarios"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    activo = Column(Boolean, default=True, nullable=False)
+    fecha_registro = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    wishlist_items = relationship(
+        "WishlistItem", back_populates="usuario", cascade="all, delete-orphan"
+    )
+
+
+class WishlistItem(Base):
+    __tablename__ = "wishlist_items"
+    __table_args__ = (
+        UniqueConstraint("usuario_id", "producto_id", name="uq_wishlist_usuario_producto"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False)
+    producto_id = Column(Integer, ForeignKey("productos.id"), nullable=False)
+    precio_al_agregar = Column(Float, nullable=False)
+    fecha_agregado = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    usuario = relationship("Usuario", back_populates="wishlist_items")
+    producto = relationship("Producto", back_populates="wishlist_items")
