@@ -43,3 +43,20 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class WishlistItemResponse(BaseModel):
+    id: int
+    producto_id: int
+    nombre: str
+    url: str
+    imagen_url: str | None
+    tienda: str
+    categoria: str | None
+    precio_actual: float
+    precio_original: float | None
+    precio_al_agregar: float
+    fecha_agregado: datetime
+
+    class Config:
+        from_attributes = True
