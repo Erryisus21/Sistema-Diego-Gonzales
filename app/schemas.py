@@ -1,5 +1,5 @@
 # app/schemas.py
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
 
 class OfertaResponse(BaseModel):
@@ -16,3 +16,30 @@ class OfertaResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class UsuarioRegistro(BaseModel):
+    nombre: str
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+
+
+class UsuarioResponse(BaseModel):
+    id: int
+    nombre: str
+    email: EmailStr
+    activo: bool
+    fecha_registro: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
