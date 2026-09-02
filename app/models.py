@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.database import Base
@@ -16,6 +16,13 @@ class Producto(Base):
     precio_actual = Column(Float)
     precio_original = Column(Float, nullable=True)
     fecha_actualizacion = Column(DateTime, default=datetime.utcnow)
+    # NUEVO: evolución hacia deduplicación por tienda+external_id. Todos
+    # nullable=True durante la transición: ningún scraper los provee de
+    # forma consistente todavía. disponible=NULL representa "desconocido",
+    # no se le pone default=True a propósito.
+    external_id = Column(String, nullable=True)
+    moneda = Column(String, nullable=True)
+    disponible = Column(Boolean, nullable=True)
 
     historial = relationship("HistorialPrecio", back_populates="producto")
     ofertas = relationship("Oferta", back_populates="producto")
@@ -24,11 +31,17 @@ class Producto(Base):
 
 class HistorialPrecio(Base):
     __tablename__ = "historial_precios"
+    __table_args__ = (
+        Index("ix_historial_precios_producto_fecha", "producto_id", "fecha"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     producto_id = Column(Integer, ForeignKey("productos.id"))
     precio = Column(Float)
     fecha = Column(DateTime, default=datetime.utcnow)
+    # NUEVO: nullable=True durante la transición - el historial existente no
+    # tiene moneda y las integraciones todavía no la proveen consistentemente.
+    moneda = Column(String, nullable=True)
 
     producto = relationship("Producto", back_populates="historial")
 

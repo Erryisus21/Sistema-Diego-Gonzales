@@ -38,7 +38,7 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
         producto.precio_original = precio_promedio
         producto.fecha_actualizacion = datetime.utcnow()
 
-    guardar_precio(db, producto.id, item["precio"])
+    guardar_precio(db, producto.id, item["precio"], moneda=producto.moneda)
 
     ultima_oferta = (
         db.query(Oferta)
@@ -72,7 +72,7 @@ def guardar_precio_nuevo(db: Session, item: dict, categoria: str):
     )
     db.add(producto)
     db.flush()
-    guardar_precio(db, producto.id, item["precio"])
+    guardar_precio(db, producto.id, item["precio"], moneda=producto.moneda)
     db.commit()
 
 
@@ -108,7 +108,7 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
             if not producto_db:
                 guardar_precio_nuevo(db, item, categoria)
             else:
-                guardar_precio(db, producto_db.id, precio)
+                guardar_precio(db, producto_db.id, precio, moneda=producto_db.moneda)
                 # Actualizar precio actual del producto aunque no sea oferta
                 producto_db.precio_actual = precio
                 producto_db.fecha_actualizacion = datetime.utcnow()
@@ -127,7 +127,7 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
             guardar_oferta_db(db, item, promedio, descuento, categoria)
         else:
             if producto_db:
-                guardar_precio(db, producto_db.id, precio)
+                guardar_precio(db, producto_db.id, precio, moneda=producto_db.moneda)
                 producto_db.precio_actual = precio
                 producto_db.fecha_actualizacion = datetime.utcnow()
                 db.commit()
