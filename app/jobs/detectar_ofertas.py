@@ -90,7 +90,9 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
         # Prioridad 1: promedio historico real (cuando haya varias lecturas)
         promedio_historico = None
         if producto_db:
-            promedio_historico = obtener_precio_promedio(db, producto_db.id, dias=14)
+            promedio_historico = obtener_precio_promedio(
+                db, producto_db.id, dias=14, moneda=producto_db.moneda
+            )
 
         # Decidir que usar como "precio de referencia"
         if promedio_historico and promedio_historico > precio:

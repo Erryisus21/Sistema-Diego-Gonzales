@@ -4,9 +4,9 @@ incluyendo historial de precios y estadísticas.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
 from app.database import SessionLocal
-from app.models import Producto, HistorialPrecio
+from app.models import Producto
+from app.services.precios import obtener_estadisticas_precio
 
 router = APIRouter(prefix="/producto", tags=["producto"])
 
@@ -30,30 +30,16 @@ def obtener_detalle(producto_id: int, db: Session = Depends(get_db)):
     # Precio actual con fallback
     precio_actual = producto.precio_actual or 0
 
-    # Obtener historial de los últimos 30 días
-    hace_30_dias = datetime.utcnow() - timedelta(days=30)
-    historial = db.query(HistorialPrecio).filter(
-        HistorialPrecio.producto_id == producto_id,
-        HistorialPrecio.fecha >= hace_30_dias,
-        HistorialPrecio.precio != None,
-    ).order_by(HistorialPrecio.fecha.asc()).all()
+    # Estadísticas de los últimos 30 días, sin mezclar monedas distintas
+    stats = obtener_estadisticas_precio(db, producto_id, dias=30, moneda=producto.moneda)
+    precios_historico = stats["historial"]
 
-    # Armar lista de precios (filtrar None)
-    precios_historico = [
-        {"fecha": h.fecha.isoformat(), "precio": h.precio}
-        for h in historial
-        if h.precio is not None
-    ]
-
-    # Calcular estadísticas solo con valores válidos
-    precios_valores = [h.precio for h in historial if h.precio is not None]
-    if not precios_valores and precio_actual > 0:
-        precios_valores = [precio_actual]
-
-    if precios_valores:
-        precio_min = min(precios_valores)
-        precio_max = max(precios_valores)
-        precio_promedio = sum(precios_valores) / len(precios_valores)
+    # Calcular estadísticas: usar las del historial si hay registros
+    # compatibles, o caer al precio_actual del producto si no hay ninguno.
+    if stats["total_registros"] > 0:
+        precio_min = stats["precio_minimo"]
+        precio_max = stats["precio_maximo"]
+        precio_promedio = stats["precio_promedio"]
     else:
         precio_min = precio_actual
         precio_max = precio_actual
@@ -82,6 +68,6 @@ def obtener_detalle(producto_id: int, db: Session = Depends(get_db)):
             "precio_promedio": round(precio_promedio, 2),
             "es_minimo_historico": es_minimo_historico,
             "porcentaje_vs_promedio": round(porcentaje_vs_promedio, 1),
-            "total_registros": len(precios_historico),
+            "total_registros": stats["total_registros"],
         },
     }
