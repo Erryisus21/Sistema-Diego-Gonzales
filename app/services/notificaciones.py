@@ -11,10 +11,15 @@ from exponent_server_sdk import (
 from requests.exceptions import ConnectionError, HTTPError
 
 
-def enviar_notificacion(token: str, titulo: str, mensaje: str, data: dict = None):
+def enviar_notificacion(token: str, titulo: str, mensaje: str, data: dict = None) -> bool | None:
     """
     Envía una notificación push a un token específico.
-    Retorna True si se envió correctamente, False si el token ya no es válido.
+
+    Retorna:
+        True  -> envío confirmado por Expo.
+        False -> el token ya no es válido (DeviceNotRegisteredError), debe desactivarse.
+        None  -> error temporal o inesperado; no se sabe si se entregó, no
+                 debe tratarse como éxito ni como token inválido.
     """
     try:
         response = PushClient().publish(
@@ -36,22 +41,31 @@ def enviar_notificacion(token: str, titulo: str, mensaje: str, data: dict = None
         return False
 
     except (PushServerError, ConnectionError, HTTPError) as e:
-        print(f"  ✗ Error de servidor Expo: {e}")
-        return True  # Reintentar después, no invalidar token
+        print(f"  ✗ Error de servidor Expo (temporal): {e}")
+        return None  # Reintentar después, no invalidar token
 
     except PushTicketError as e:
-        print(f"  ✗ Error en ticket: {e}")
-        return True
+        print(f"  ✗ Error en ticket (temporal): {e}")
+        return None
+
+    except Exception as e:
+        # Cualquier otro error no previsto: no debe tumbar al llamador ni
+        # exponer el token, el mensaje completo de la excepción ni datos
+        # sensibles, solo el tipo de error.
+        print(f"  ✗ Error inesperado enviando notificación: {type(e).__name__}")
+        return None
 
 
 def enviar_notificacion_multiple(tokens: list, titulo: str, mensaje: str, data: dict = None):
     """
     Envía la misma notificación a múltiples tokens.
-    Retorna lista de tokens inválidos que deben marcarse como inactivos.
+    Retorna lista de tokens inválidos (resultado is False) que deben
+    marcarse como inactivos. Un resultado None (error temporal) no se
+    considera inválido.
     """
     tokens_invalidos = []
     for token in tokens:
-        valido = enviar_notificacion(token, titulo, mensaje, data)
-        if not valido:
+        resultado = enviar_notificacion(token, titulo, mensaje, data)
+        if resultado is False:
             tokens_invalidos.append(token)
     return tokens_invalidos

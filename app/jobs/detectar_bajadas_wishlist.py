@@ -1,12 +1,14 @@
 """
-Job que revisa productos en wishlist y envía notificaciones
-cuando el precio ha bajado >=10% desde que se agregaron.
+Job que revisa los WishlistItem de todos los usuarios y envía notificaciones
+cuando el precio de un producto ha bajado >=10% desde que se agregó.
 """
-from sqlalchemy.orm import Session
-from app.database import SessionLocal
-from app.models import Producto, PushToken, NotificacionEnviada
-from app.services.notificaciones import enviar_notificacion
 from datetime import datetime, timedelta
+
+from sqlalchemy.orm import Session, joinedload
+
+from app.database import SessionLocal
+from app.models import WishlistItem, PushToken, NotificacionEnviada
+from app.services.notificaciones import enviar_notificacion
 
 # Umbral mínimo de descuento para notificar (10%)
 UMBRAL_DESCUENTO = 10.0
@@ -16,46 +18,63 @@ COOLDOWN_HORAS = 24
 
 
 def detectar_bajadas():
-    """Revisa cada producto en wishlist y notifica si bajó significativamente."""
+    """Revisa cada WishlistItem y notifica al dueño si el producto bajó significativamente."""
     db: Session = SessionLocal()
 
     try:
-        # Obtener productos en wishlist con precio registrado al agregar
-        productos_wishlist = db.query(Producto).filter(
-            Producto.en_wishlist == True,
-            Producto.precio_al_agregar_wishlist != None,
-            Producto.precio_al_agregar_wishlist > 0,
-        ).all()
+        items = (
+            db.query(WishlistItem)
+            .options(joinedload(WishlistItem.producto))
+            .all()
+        )
 
-        print(f"[WISHLIST] Revisando {len(productos_wishlist)} productos...")
+        print(f"[WISHLIST] Revisando {len(items)} items de wishlist...")
 
-        if not productos_wishlist:
-            return
-
-        # Obtener todos los tokens activos
-        tokens_activos = db.query(PushToken).filter(PushToken.activo == True).all()
-
-        if not tokens_activos:
-            print("[WISHLIST] No hay dispositivos registrados, saltando...")
+        if not items:
             return
 
         notificaciones_enviadas = 0
+        tokens_por_usuario: dict[int, list[PushToken]] = {}
 
-        for producto in productos_wishlist:
-            precio_anterior = producto.precio_al_agregar_wishlist
-            precio_actual = producto.precio_actual
+        for item in items:
+            producto = item.producto
+            precio_anterior = item.precio_al_agregar
+            precio_actual = producto.precio_actual if producto else None
 
-            if precio_actual >= precio_anterior:
-                continue  # No bajó, o subió
+            if (
+                not producto
+                or precio_anterior is None
+                or precio_actual is None
+                or precio_anterior <= 0
+                or precio_actual <= 0
+                or precio_actual >= precio_anterior
+            ):
+                continue  # datos incompletos, o no bajó / subió
 
             # Calcular porcentaje de bajada
             descuento = ((precio_anterior - precio_actual) / precio_anterior) * 100
 
             if descuento < UMBRAL_DESCUENTO:
-                continue  # Bajada muy pequeña
+                continue  # bajada muy pequeña
 
-            # Para cada token, verificar si no se ha notificado recientemente
-            for token in tokens_activos:
+            # Tokens activos de este usuario, cacheados para no repetir la
+            # consulta si tiene varios productos calificando en esta corrida.
+            if item.usuario_id not in tokens_por_usuario:
+                tokens_por_usuario[item.usuario_id] = db.query(PushToken).filter(
+                    PushToken.activo == True,
+                    PushToken.usuario_id == item.usuario_id,
+                ).all()
+
+            tokens_usuario = tokens_por_usuario[item.usuario_id]
+
+            if not tokens_usuario:
+                continue  # este usuario no tiene dispositivos; seguir con el resto
+
+            # Para cada token del usuario, verificar si no se ha notificado recientemente
+            for token in tokens_usuario:
+                if not token.activo:
+                    continue  # ya se desactivó en esta misma corrida, no reintentar
+
                 hace_24h = datetime.utcnow() - timedelta(hours=COOLDOWN_HORAS)
                 notificacion_reciente = db.query(NotificacionEnviada).filter(
                     NotificacionEnviada.producto_id == producto.id,
@@ -79,20 +98,48 @@ def detectar_bajadas():
                     data={"producto_id": producto.id, "url": producto.url},
                 )
 
-                if enviado:
-                    # Registrar notificación enviada
+                if enviado is True:
+                    # Registrar notificación enviada y persistir de inmediato:
+                    # Expo aceptó/procesó correctamente el envío, no hay forma
+                    # de deshacer ese efecto, así que este registro no debe
+                    # depender de que el resto de la corrida termine bien.
                     registro = NotificacionEnviada(
                         producto_id=producto.id,
                         token_id=token.id,
                         precio_notificado=precio_actual,
                     )
                     db.add(registro)
-                    notificaciones_enviadas += 1
-                else:
-                    # Token inválido, desactivarlo
-                    token.activo = False
+                    try:
+                        db.commit()
+                        notificaciones_enviadas += 1
+                    except Exception as e:
+                        db.rollback()
+                        # No hay atomicidad con Expo: Expo ya aceptó/procesó el
+                        # envío pero no pudimos registrarlo. Puede reenviarse
+                        # en la próxima corrida. No exponemos el token, solo el id.
+                        print(
+                            f"[WISHLIST] Error guardando NotificacionEnviada "
+                            f"(producto_id={producto.id}, token_id={token.id}, "
+                            f"posible reenvío futuro): {type(e).__name__}: {e}"
+                        )
 
-        db.commit()
+                elif enviado is False:
+                    # Token definitivamente inválido: desactivar y persistir
+                    # de inmediato, sin esperar al resto de la corrida.
+                    token.activo = False
+                    try:
+                        db.commit()
+                    except Exception as e:
+                        db.rollback()
+                        print(
+                            f"[WISHLIST] Error guardando desactivación de token "
+                            f"(token_id={token.id}): {type(e).__name__}: {e}"
+                        )
+
+                # enviado is None: error temporal/inesperado -> no se registra
+                # NotificacionEnviada (sin cooldown falso), no se desactiva el
+                # token, y no hay nada que commitear.
+
         print(f"[WISHLIST] Notificaciones enviadas: {notificaciones_enviadas}")
 
     except Exception as e:
