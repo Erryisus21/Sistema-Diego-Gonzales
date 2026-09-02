@@ -75,7 +75,6 @@ def obtener_detalle(producto_id: int, db: Session = Depends(get_db)):
         "categoria": producto.categoria,
         "precio_actual": precio_actual,
         "precio_original": producto.precio_original,
-        "en_wishlist": producto.en_wishlist,
         "historial": precios_historico,
         "estadisticas": {
             "precio_minimo": precio_min,
