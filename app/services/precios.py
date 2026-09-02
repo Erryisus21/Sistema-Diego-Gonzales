@@ -67,6 +67,74 @@ def obtener_estadisticas_precio(
     }
 
 
+def obtener_cambio_reciente(
+    db: Session,
+    producto_id: int,
+    moneda: str | None = None,
+) -> dict:
+    """Compara los dos registros de HistorialPrecio más recientes y
+    compatibles con `moneda` (misma normalización y misma regla de no
+    mezclar monedas que obtener_estadisticas_precio()/guardar_precio()).
+
+    Si hay al menos dos registros compatibles, devuelve precio_anterior,
+    precio_actual, diferencia, porcentaje_cambio, fecha_anterior y
+    fecha_actual. Una bajada de precio da porcentaje_cambio negativo, una
+    subida da positivo.
+
+    Si hay menos de dos registros compatibles (0 o 1), devuelve todos los
+    valores en None junto con disponible=False y un mensaje explicativo,
+    sin lanzar ningún error.
+    """
+    moneda_normalizada = _normalizar_moneda(moneda)
+
+    query = db.query(HistorialPrecio).filter(
+        HistorialPrecio.producto_id == producto_id,
+        HistorialPrecio.precio != None,
+    )
+    if moneda_normalizada is None:
+        query = query.filter(HistorialPrecio.moneda.is_(None))
+    else:
+        query = query.filter(HistorialPrecio.moneda == moneda_normalizada)
+
+    ultimos_dos = (
+        query.order_by(HistorialPrecio.fecha.desc(), HistorialPrecio.id.desc())
+        .limit(2)
+        .all()
+    )
+
+    if len(ultimos_dos) < 2:
+        return {
+            "disponible": False,
+            "mensaje": "No hay suficiente historial para calcular un cambio reciente",
+            "precio_anterior": None,
+            "precio_actual": None,
+            "diferencia": None,
+            "porcentaje_cambio": None,
+            "fecha_anterior": None,
+            "fecha_actual": None,
+        }
+
+    mas_reciente, segundo_reciente = ultimos_dos[0], ultimos_dos[1]
+    precio_actual = mas_reciente.precio
+    precio_anterior = segundo_reciente.precio
+    diferencia = precio_actual - precio_anterior
+    porcentaje_cambio = (
+        (precio_actual - precio_anterior) / precio_anterior * 100
+        if precio_anterior > 0 else None
+    )
+
+    return {
+        "disponible": True,
+        "mensaje": None,
+        "precio_anterior": precio_anterior,
+        "precio_actual": precio_actual,
+        "diferencia": diferencia,
+        "porcentaje_cambio": porcentaje_cambio,
+        "fecha_anterior": segundo_reciente.fecha.isoformat(),
+        "fecha_actual": mas_reciente.fecha.isoformat(),
+    }
+
+
 def obtener_precio_promedio(
     db: Session,
     producto_id: int,

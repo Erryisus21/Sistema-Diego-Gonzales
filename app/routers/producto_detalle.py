@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import Producto
-from app.services.precios import obtener_estadisticas_precio
+from app.services.precios import obtener_estadisticas_precio, obtener_cambio_reciente
 
 router = APIRouter(prefix="/producto", tags=["producto"])
 
@@ -33,6 +33,9 @@ def obtener_detalle(producto_id: int, db: Session = Depends(get_db)):
     # Estadísticas de los últimos 30 días, sin mezclar monedas distintas
     stats = obtener_estadisticas_precio(db, producto_id, dias=30, moneda=producto.moneda)
     precios_historico = stats["historial"]
+
+    # Cambio reciente (últimos dos registros compatibles con la moneda del producto)
+    cambio_reciente = obtener_cambio_reciente(db, producto_id, moneda=producto.moneda)
 
     # Calcular estadísticas: usar las del historial si hay registros
     # compatibles, o caer al precio_actual del producto si no hay ninguno.
@@ -62,6 +65,7 @@ def obtener_detalle(producto_id: int, db: Session = Depends(get_db)):
         "precio_actual": precio_actual,
         "precio_original": producto.precio_original,
         "historial": precios_historico,
+        "cambio_reciente": cambio_reciente,
         "estadisticas": {
             "precio_minimo": precio_min,
             "precio_maximo": precio_max,
