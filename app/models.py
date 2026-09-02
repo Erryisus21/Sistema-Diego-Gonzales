@@ -16,9 +16,6 @@ class Producto(Base):
     precio_actual = Column(Float)
     precio_original = Column(Float, nullable=True)
     fecha_actualizacion = Column(DateTime, default=datetime.utcnow)
-    en_wishlist = Column(Boolean, default=False)
-    # NUEVO: precio al que se agregó a wishlist (para comparar bajadas)
-    precio_al_agregar_wishlist = Column(Float, nullable=True)
 
     historial = relationship("HistorialPrecio", back_populates="producto")
     ofertas = relationship("Oferta", back_populates="producto")
