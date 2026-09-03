@@ -101,6 +101,9 @@ class Usuario(Base):
     push_tokens = relationship(
         "PushToken", back_populates="usuario", cascade="all, delete-orphan"
     )
+    refresh_tokens = relationship(
+        "RefreshToken", back_populates="usuario", cascade="all, delete-orphan"
+    )
 
 
 class WishlistItem(Base):
@@ -117,3 +120,22 @@ class WishlistItem(Base):
 
     usuario = relationship("Usuario", back_populates="wishlist_items")
     producto = relationship("Producto", back_populates="wishlist_items")
+
+
+# NUEVO: refresh tokens para renovación de sesión (Fase 2). Solo la
+# estructura de datos por ahora: no se genera ni se hashea nada todavía
+# desde aquí. El token en sí NUNCA se guarda en texto plano, solo su
+# SHA-256 en token_hash.
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String, nullable=False, unique=True, index=True)
+    fecha_creacion = Column(DateTime, default=datetime.utcnow, nullable=False)
+    fecha_expiracion = Column(DateTime, nullable=False)
+    revocado = Column(Boolean, default=False, nullable=False)
+    # Opcional: para auditar cuándo se invalidó una sesión (logout, reset de password, etc.)
+    fecha_revocacion = Column(DateTime, nullable=True)
+
+    usuario = relationship("Usuario", back_populates="refresh_tokens")

@@ -2,7 +2,9 @@
 Servicio de seguridad: hashing de contraseñas (Argon2 vía pwdlib) y
 tokens JWT (PyJWT) para la autenticación de SAVVR.
 """
+import hashlib
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -13,7 +15,7 @@ from pwdlib import PasswordHash
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Usuario
+from app.models import RefreshToken, Usuario
 
 # Carga explícita de .env en este módulo: no depender de que otro módulo
 # (p. ej. un scraper) haya ejecutado load_dotenv() antes de importar este.
@@ -68,6 +70,53 @@ def crear_access_token(usuario_id: int) -> str:
 
 def decodificar_token(token: str) -> dict:
     return jwt.decode(token, JWT_SECRET_KEY, algorithms=[ALGORITHM])
+
+
+# --- Refresh tokens ---
+REFRESH_TOKEN_BYTES = 64
+REFRESH_TOKEN_EXPIRE_DIAS = 30
+
+
+def generar_refresh_token() -> str:
+    """Genera un refresh token opaco criptográficamente seguro.
+
+    El valor devuelto existe en texto plano únicamente en este momento y en
+    la respuesta al cliente: nunca se guarda así en la base de datos (solo
+    su SHA-256, ver hash_refresh_token) ni debe imprimirse en logs.
+    """
+    return secrets.token_urlsafe(REFRESH_TOKEN_BYTES)
+
+
+def hash_refresh_token(refresh_token: str) -> str:
+    """SHA-256 (hex) del refresh token. Es lo único que se persiste en
+    RefreshToken.token_hash — el valor plano nunca llega a la base."""
+    return hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+
+
+def crear_sesion_refresh(db: Session, usuario_id: int) -> str:
+    """Crea una nueva sesión RefreshToken (expira en REFRESH_TOKEN_EXPIRE_DIAS
+    días) y la agrega a la sesión de BD con db.add() — no hace commit(), el
+    llamador conserva el manejo transaccional.
+
+    Devuelve el refresh token en texto plano para entregarlo al cliente;
+    es la única vez que existe así, no debe guardarse en ningún otro lado.
+    """
+    refresh_token = generar_refresh_token()
+    sesion = RefreshToken(
+        usuario_id=usuario_id,
+        token_hash=hash_refresh_token(refresh_token),
+        fecha_expiracion=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DIAS),
+    )
+    db.add(sesion)
+    return refresh_token
+
+
+def buscar_sesion_por_refresh_token(db: Session, refresh_token: str) -> RefreshToken | None:
+    """Localiza la sesión RefreshToken correspondiente al valor plano
+    recibido, comparando por su hash. No valida vigencia ni estado — el
+    llamador decide qué hacer con lo que encuentre (o no encuentre)."""
+    token_hash = hash_refresh_token(refresh_token)
+    return db.query(RefreshToken).filter(RefreshToken.token_hash == token_hash).first()
 
 
 # --- Dependencia para endpoints protegidos (esquema Bearer, no OAuth2 Password Form) ---
