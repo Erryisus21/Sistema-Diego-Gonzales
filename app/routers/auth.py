@@ -9,21 +9,25 @@ from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import PushToken, RefreshToken, Usuario
+from app.models import PasswordResetToken, PushToken, RefreshToken, Usuario
 from app import schemas
 from app.services.seguridad import (
     buscar_sesion_por_refresh_token,
     crear_access_token,
     crear_sesion_refresh,
+    crear_sesion_reset,
+    enviar_email_recuperacion,
     get_usuario_actual,
     hash_password,
     hash_refresh_token,
+    hash_token_reset,
     verificar_password,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 _CREDENCIALES_INVALIDAS_MSG = "Credenciales inválidas"
+_RESET_INVALIDO_MSG = "El enlace de recuperación no es válido o ya expiró."
 
 
 @router.post("/registro", response_model=schemas.UsuarioResponse, status_code=status.HTTP_201_CREATED)
@@ -198,6 +202,129 @@ def desactivar_cuenta(
         raise
 
     return schemas.LogoutResponse(mensaje="Cuenta desactivada")
+
+
+@router.post("/recuperar", response_model=schemas.LogoutResponse)
+def recuperar(data: schemas.RecuperarPasswordRequest, db: Session = Depends(get_db)):
+    """Inicia la recuperación de contraseña. Responde exactamente el mismo
+    mensaje exista o no la cuenta (y exista o no esté activa, y falle o
+    no el envío del correo), para no revelar nada sobre el email recibido.
+    Solo si el usuario existe y está activo: se invalidan sus enlaces de
+    recuperación anteriores sin usar (solo el más reciente puede
+    utilizarse) y se crea un PasswordResetToken nuevo, todo en una única
+    transacción. El envío real del correo (enviar_email_recuperacion) es
+    un punto de integración aparte, sin proveedor configurado todavía —
+    no altera la lógica de seguridad, y cualquier falla suya se aísla por
+    completo de la respuesta HTTP."""
+    email = data.email.lower()
+    usuario = db.query(Usuario).filter(Usuario.email == email).first()
+
+    if usuario is not None and usuario.activo:
+        ahora = datetime.utcnow()
+
+        # Invalidar enlaces de recuperación anteriores sin usar: solo el
+        # más reciente debe poder utilizarse.
+        db.execute(
+            update(PasswordResetToken)
+            .where(
+                PasswordResetToken.usuario_id == usuario.id,
+                PasswordResetToken.usado == False,
+            )
+            .values(usado=True, fecha_uso=ahora)
+        )
+
+        token = crear_sesion_reset(db, usuario.id)
+
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+        # Aislada de la respuesta HTTP: una futura falla del proveedor de
+        # correo nunca debe cambiar el status ni el mensaje devuelto, ni
+        # revelar detalles del proveedor al cliente.
+        try:
+            enviar_email_recuperacion(usuario.email, token)
+        except Exception:
+            pass
+
+    return schemas.LogoutResponse(
+        mensaje="Si el correo existe, se enviarán instrucciones de recuperación"
+    )
+
+
+@router.post("/restablecer", response_model=schemas.LogoutResponse)
+def restablecer(data: schemas.RestablecerPasswordRequest, db: Session = Depends(get_db)):
+    """Consume atómicamente un token de recuperación de un solo uso y
+    establece una nueva contraseña. Revoca todas las sesiones anteriores
+    del usuario (RefreshToken + invalidación de access tokens vía
+    token_version) y marca cualquier otro enlace de recuperación
+    pendiente como usado. Nunca reactiva una cuenta desactivada."""
+    token_hash = hash_token_reset(data.token)
+    ahora = datetime.utcnow()
+
+    # Consumo atómico: mismo patrón que la rotación de /auth/refresh — un
+    # único UPDATE condicional, sin ventana entre "verificar" y "actuar".
+    resultado = db.execute(
+        update(PasswordResetToken)
+        .where(
+            PasswordResetToken.token_hash == token_hash,
+            PasswordResetToken.usado == False,
+            PasswordResetToken.fecha_expiracion > ahora,
+        )
+        .values(usado=True, fecha_uso=ahora)
+    )
+
+    if resultado.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_RESET_INVALIDO_MSG)
+
+    sesion = db.query(PasswordResetToken).filter(PasswordResetToken.token_hash == token_hash).first()
+    usuario = sesion.usuario
+
+    if usuario is None or not usuario.activo:
+        # El token queda consumido igual (ya no reutilizable) aunque se
+        # rechace el cambio; el restablecimiento nunca reactiva una
+        # cuenta desactivada.
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_RESET_INVALIDO_MSG)
+
+    usuario.password_hash = hash_password(data.nueva_password)
+    usuario.token_version += 1
+
+    db.execute(
+        update(RefreshToken)
+        .where(
+            RefreshToken.usuario_id == usuario.id,
+            RefreshToken.revocado == False,
+        )
+        .values(revocado=True, fecha_revocacion=ahora)
+    )
+
+    # Cualquier otro enlace de recuperación pendiente de este usuario
+    # queda inutilizado (el que ya se consumió arriba no vuelve a
+    # matchear porque su `usado` ya quedó en True en esta misma transacción).
+    db.execute(
+        update(PasswordResetToken)
+        .where(
+            PasswordResetToken.usuario_id == usuario.id,
+            PasswordResetToken.usado == False,
+        )
+        .values(usado=True, fecha_uso=ahora)
+    )
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return schemas.LogoutResponse(mensaje="Contraseña actualizada correctamente")
 
 
 @router.get("/me", response_model=schemas.UsuarioResponse)

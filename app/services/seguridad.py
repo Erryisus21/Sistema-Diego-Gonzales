@@ -15,7 +15,7 @@ from pwdlib import PasswordHash
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import RefreshToken, Usuario
+from app.models import PasswordResetToken, RefreshToken, Usuario
 
 # Carga explícita de .env en este módulo: no depender de que otro módulo
 # (p. ej. un scraper) haya ejecutado load_dotenv() antes de importar este.
@@ -118,6 +118,62 @@ def buscar_sesion_por_refresh_token(db: Session, refresh_token: str) -> RefreshT
     llamador decide qué hacer con lo que encuentre (o no encuentre)."""
     token_hash = hash_refresh_token(refresh_token)
     return db.query(RefreshToken).filter(RefreshToken.token_hash == token_hash).first()
+
+
+# --- Tokens de recuperación de contraseña ---
+RESET_TOKEN_BYTES = 64
+RESET_TOKEN_EXPIRE_MINUTOS = 30
+
+
+def generar_token_reset() -> str:
+    """Genera un token de recuperación de contraseña opaco y de alta
+    entropía.
+
+    El valor devuelto existe en texto plano únicamente en este momento;
+    nunca se guarda así en la base de datos (solo su SHA-256, ver
+    hash_token_reset) ni debe imprimirse/registrarse en logs.
+    """
+    return secrets.token_urlsafe(RESET_TOKEN_BYTES)
+
+
+def hash_token_reset(token: str) -> str:
+    """SHA-256 (hex) del token de recuperación. Es lo único que se
+    persiste en PasswordResetToken.token_hash — el valor plano nunca
+    llega a la base."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def crear_sesion_reset(db: Session, usuario_id: int) -> str:
+    """Crea un PasswordResetToken (expira en RESET_TOKEN_EXPIRE_MINUTOS
+    minutos) y lo agrega a la sesión de BD con db.add() — no hace
+    commit(), el llamador conserva el manejo transaccional.
+
+    Devuelve el token en texto plano para que el llamador se lo entregue
+    al mecanismo de envío de correo; no debe guardarse ni registrarse en
+    ningún otro lado.
+    """
+    token = generar_token_reset()
+    sesion = PasswordResetToken(
+        usuario_id=usuario_id,
+        token_hash=hash_token_reset(token),
+        fecha_expiracion=datetime.utcnow() + timedelta(minutes=RESET_TOKEN_EXPIRE_MINUTOS),
+    )
+    db.add(sesion)
+    return token
+
+
+def enviar_email_recuperacion(email: str, token: str) -> None:
+    """Punto de integración futuro con un proveedor de email real
+    (SendGrid, SES, SMTP, etc.). Todavía no hay ningún proveedor
+    configurado en SAVVR, así que esta función intencionalmente no hace
+    nada por ahora.
+
+    No debe imprimir, registrar (logs) ni persistir `token` en ningún
+    lado. Cuando se conecte un proveedor real, esta debería ser la única
+    función que haga falta completar, sin tocar la lógica de seguridad
+    de generación/hash/consumo del token de recuperación.
+    """
+    pass
 
 
 # --- Dependencia para endpoints protegidos (esquema Bearer, no OAuth2 Password Form) ---

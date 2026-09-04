@@ -62,6 +62,15 @@ class DesactivarCuentaRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
 
 
+class RecuperarPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class RestablecerPasswordRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=512)
+    nueva_password: str = Field(min_length=8, max_length=128)
+
+
 class WishlistItemResponse(BaseModel):
     id: int
     producto_id: int
