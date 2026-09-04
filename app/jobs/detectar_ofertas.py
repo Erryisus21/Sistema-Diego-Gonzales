@@ -2,8 +2,7 @@ from app.productos import PRODUCTOS
 from app.scrapers.ebay import scraper_ebay
 from app.scrapers.etsy import scraper_etsy
 from app.services.precios import obtener_precio_promedio, guardar_precio
-from app.database import SessionLocal, engine
-from app import models
+from app.database import SessionLocal
 from app.models import Producto, Oferta
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -142,9 +141,6 @@ def detectar_ofertas():
 
 
 def ejecutar():
-    # Crear las tablas si no existen
-    models.Base.metadata.create_all(bind=engine)
-
     db = SessionLocal()
 
     try:

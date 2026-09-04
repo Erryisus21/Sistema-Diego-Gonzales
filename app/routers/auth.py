@@ -9,7 +9,7 @@ from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import RefreshToken, Usuario
+from app.models import PushToken, RefreshToken, Usuario
 from app import schemas
 from app.services.seguridad import (
     buscar_sesion_por_refresh_token,
@@ -59,7 +59,7 @@ def login(data: schemas.LoginRequest, db: Session = Depends(get_db)):
             detail=_CREDENCIALES_INVALIDAS_MSG,
         )
 
-    access_token = crear_access_token(usuario.id)
+    access_token = crear_access_token(usuario.id, usuario.token_version)
     refresh_token = crear_sesion_refresh(db, usuario.id)
 
     try:
@@ -120,7 +120,7 @@ def refresh(data: schemas.RefreshRequest, db: Session = Depends(get_db)):
     # la creación de R2 se confirman en el mismo commit, para que un fallo
     # no deje el anterior revocado sin que exista el nuevo.
     nuevo_refresh_token = crear_sesion_refresh(db, sesion.usuario_id)
-    nuevo_access_token = crear_access_token(sesion.usuario_id)
+    nuevo_access_token = crear_access_token(sesion.usuario_id, usuario.token_version)
 
     try:
         db.commit()
@@ -150,6 +150,54 @@ def logout(data: schemas.LogoutRequest, db: Session = Depends(get_db)):
             raise
 
     return schemas.LogoutResponse(mensaje="Sesión cerrada")
+
+
+@router.post("/desactivar-cuenta", response_model=schemas.LogoutResponse)
+def desactivar_cuenta(
+    data: schemas.DesactivarCuentaRequest,
+    usuario_actual: Usuario = Depends(get_usuario_actual),
+    db: Session = Depends(get_db),
+):
+    """Desactivación lógica de cuenta (requiere confirmar la contraseña
+    actual). No borra al usuario ni ninguno de sus datos — solo cambia
+    estados (Usuario.activo, RefreshToken.revocado, PushToken.activo) en
+    una sola transacción: Usuario.activo=False, se revocan todos los
+    RefreshToken activos y se desactivan todos los PushToken activos."""
+    if not verificar_password(data.password, usuario_actual.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_CREDENCIALES_INVALIDAS_MSG,
+        )
+
+    ahora = datetime.utcnow()
+
+    usuario_actual.activo = False
+
+    db.execute(
+        update(RefreshToken)
+        .where(
+            RefreshToken.usuario_id == usuario_actual.id,
+            RefreshToken.revocado == False,
+        )
+        .values(revocado=True, fecha_revocacion=ahora)
+    )
+
+    db.execute(
+        update(PushToken)
+        .where(
+            PushToken.usuario_id == usuario_actual.id,
+            PushToken.activo == True,
+        )
+        .values(activo=False)
+    )
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return schemas.LogoutResponse(mensaje="Cuenta desactivada")
 
 
 @router.get("/me", response_model=schemas.UsuarioResponse)

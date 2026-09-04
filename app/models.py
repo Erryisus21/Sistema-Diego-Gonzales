@@ -94,6 +94,9 @@ class Usuario(Base):
     password_hash = Column(String, nullable=False)
     activo = Column(Boolean, default=True, nullable=False)
     fecha_registro = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # Incrementar invalida de inmediato todos los access JWT emitidos
+    # previamente (se compara contra el claim "ver" en get_usuario_actual).
+    token_version = Column(Integer, nullable=False, default=1, server_default="1")
 
     wishlist_items = relationship(
         "WishlistItem", back_populates="usuario", cascade="all, delete-orphan"
@@ -103,6 +106,9 @@ class Usuario(Base):
     )
     refresh_tokens = relationship(
         "RefreshToken", back_populates="usuario", cascade="all, delete-orphan"
+    )
+    password_reset_tokens = relationship(
+        "PasswordResetToken", back_populates="usuario", cascade="all, delete-orphan"
     )
 
 
@@ -139,3 +145,22 @@ class RefreshToken(Base):
     fecha_revocacion = Column(DateTime, nullable=True)
 
     usuario = relationship("Usuario", back_populates="refresh_tokens")
+
+
+# NUEVO: tokens de recuperación de contraseña (Fase 2). Solo la estructura
+# de datos por ahora: no se genera ni se hashea nada todavía desde aquí,
+# ni hay endpoints ni envío de correo. El token en sí NUNCA se guarda en
+# texto plano, solo su SHA-256 en token_hash.
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String, nullable=False, unique=True, index=True)
+    fecha_creacion = Column(DateTime, default=datetime.utcnow, nullable=False)
+    fecha_expiracion = Column(DateTime, nullable=False)
+    usado = Column(Boolean, default=False, nullable=False)
+    # Para auditar cuándo se consumió el token
+    fecha_uso = Column(DateTime, nullable=True)
+
+    usuario = relationship("Usuario", back_populates="password_reset_tokens")

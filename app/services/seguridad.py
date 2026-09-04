@@ -58,10 +58,11 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 
-def crear_access_token(usuario_id: int) -> str:
+def crear_access_token(usuario_id: int, token_version: int) -> str:
     ahora = datetime.now(timezone.utc)
     payload = {
         "sub": str(usuario_id),
+        "ver": token_version,
         "iat": ahora,
         "exp": ahora + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     }
@@ -144,6 +145,11 @@ def get_usuario_actual(
 
     usuario = db.query(Usuario).filter(Usuario.id == int(usuario_id)).first()
     if not usuario or not usuario.activo:
+        raise _CREDENCIALES_INVALIDAS
+
+    if payload.get("ver") != usuario.token_version:
+        # No se distingue este caso de cualquier otro token inválido: el
+        # mismo 401 genérico, sin revelar que la versión no coincidió.
         raise _CREDENCIALES_INVALIDAS
 
     return usuario

@@ -4,14 +4,10 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app.database import engine, Base
 from app.routers import busqueda, wishlist, categorias, push, producto_detalle, ofertas, auth
 from app.jobs.detectar_ofertas import detectar_ofertas
 from app.jobs.detectar_bajadas_wishlist import detectar_bajadas
 
-
-# Crear todas las tablas
-Base.metadata.create_all(bind=engine)
 
 scheduler = AsyncIOScheduler()
 

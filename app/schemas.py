@@ -58,6 +58,10 @@ class LogoutResponse(BaseModel):
     mensaje: str
 
 
+class DesactivarCuentaRequest(BaseModel):
+    password: str = Field(min_length=8, max_length=128)
+
+
 class WishlistItemResponse(BaseModel):
     id: int
     producto_id: int
