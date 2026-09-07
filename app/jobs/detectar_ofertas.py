@@ -89,6 +89,96 @@ def _actualizar_external_id_si_valido(producto: Producto, item: dict) -> None:
         producto.external_id = external_id_item
 
 
+def _localizar_producto(db: Session, item: dict) -> tuple[Producto | None, bool]:
+    """Punto UNICO de resolucion de identidad de Producto para un item,
+    usado por todos los lookups iniciales del pipeline.
+
+    Prioridad: (tienda, external_id) cuando ambos son valores reales; solo
+    si eso no encuentra nada (o el item no trae external_id valido) se cae
+    a Producto.url == item['link'], que sigue siendo el comportamiento
+    completo para MercadoLibre/Walmart y para cualquier item de eBay/Etsy
+    sin external_id.
+
+    Devuelve (producto, conflicto):
+      - conflicto=True: identidad en conflicto -- el llamador debe omitir
+        el item POR COMPLETO en esta corrida (`producto` es None). Ocurre
+        cuando el fallback por url encuentra una fila cuyo external_id
+        almacenado no es None y difiere del entrante: son dos identidades
+        distintas compitiendo por la misma url, y no se debe fusionar,
+        actualizar ni sobreescribir nada de esa fila.
+      - conflicto=False: `producto` es la fila encontrada (por id o por
+        url) o None si es un producto genuinamente nuevo.
+
+    Efecto secundario (unico, y solo en el camino de exito por id): si se
+    encontro por (tienda, external_id) pero la url entrante es distinta a
+    la almacenada, se intenta actualizar Producto.url al valor mas
+    reciente, aislado en un SAVEPOINT (begin_nested). Si esa url ya
+    pertenece a OTRO producto (UNIQUE), no se fusiona ni se borra nada: se
+    conserva la url actual (el SAVEPOINT revierte el intento) y se deja
+    una advertencia sanitizada (sin la url en si) para revision.
+    """
+    tienda = item.get("tienda")
+    external_id = item.get("external_id")
+    tienda_valida = isinstance(tienda, str) and bool(tienda.strip())
+    external_id_valido = isinstance(external_id, str) and bool(external_id.strip())
+
+    if tienda_valida and external_id_valido:
+        producto = (
+            db.query(Producto)
+            .filter(Producto.tienda == tienda, Producto.external_id == external_id)
+            .first()
+        )
+        if producto is not None:
+            if producto.url != item["link"]:
+                try:
+                    # SAVEPOINT: aisla el intento de actualizar la url para
+                    # no arrastrar ningun otro cambio pendiente si la url
+                    # nueva ya esta en uso por otra fila (UNIQUE).
+                    with db.begin_nested():
+                        producto.url = item["link"]
+                        db.flush()
+                except IntegrityError:
+                    # La url entrante ya pertenece a OTRO producto. No se
+                    # fusiona ni se borra nada: se conserva la url actual
+                    # de este producto (el SAVEPOINT ya revirtio el
+                    # intento de cambio, por eso no se reasigna a mano).
+                    print(
+                        f"  [ADVERTENCIA] No se pudo actualizar la url del "
+                        f"producto id={producto.id} (tienda={tienda}): la "
+                        f"url entrante ya pertenece a otro producto. Se "
+                        f"conserva la url actual."
+                    )
+            return producto, False
+
+    # Fallback: por url (comportamiento vigente para items sin
+    # (tienda, external_id) validos -- incluye siempre a MercadoLibre y
+    # Walmart hoy -- o cuando el lookup por id no encontro nada).
+    producto = db.query(Producto).filter(Producto.url == item["link"]).first()
+
+    if (
+        producto is not None
+        and producto.external_id
+        and external_id_valido
+        and producto.external_id != external_id
+    ):
+        # Misma url, pero el external_id YA almacenado (no nulo) difiere
+        # del entrante: conflicto de identidad. No se actualiza precio,
+        # nombre, historial, oferta, disponibilidad ni ningun campo de
+        # identidad de esta fila -- se omite el item por completo.
+        print(
+            f"  [ADVERTENCIA] Conflicto de identidad en producto "
+            f"id={producto.id} (tienda={tienda or producto.tienda}): la url "
+            f"ya registrada pertenece a un external_id distinto al "
+            f"entrante. Se omite este item en esta corrida."
+        )
+        return None, True
+
+    # Sin conflicto: producto existente por url (con external_id=None que
+    # podra recibir backfill normal, o ya coincidente) o None si es
+    # realmente nuevo.
+    return producto, False
+
+
 def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento: float, categoria: str):
     """Registra el producto/precio y, si corresponde, un nuevo evento de
     Oferta.
@@ -100,7 +190,14 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
     (o no se sabe con certeza); el llamador (procesar_resultados) filtra
     el caso disponible=False antes de llegar aqui.
     """
-    producto = db.query(Producto).filter(Producto.url == item["link"]).first()
+    producto, conflicto = _localizar_producto(db, item)
+    if conflicto:
+        # Conflicto de identidad (misma url, external_id ya registrado
+        # distinto al entrante): se omite el item por completo, sin crear
+        # ni actualizar nada. En la practica procesar_resultados() ya
+        # detecta y salta este caso antes de llegar aqui; esta chequeo es
+        # una segunda barrera defensiva.
+        return
     moneda_item = item.get("moneda")
     es_creacion_nueva = producto is None
 
@@ -133,10 +230,11 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
             # flush. Se descarta nuestro intento (sin duplicar) y se
             # continua con el que ya existe, igual que si hubieramos
             # entrado por la rama de "producto existente" desde el inicio.
-            producto = db.query(Producto).filter(Producto.url == item["link"]).first()
-            if not producto:
-                # Defensivo: el conflicto no dejo un producto localizable.
-                # Se omite este item sin abortar el resto de la corrida.
+            producto, conflicto = _localizar_producto(db, item)
+            if conflicto or not producto:
+                # Defensivo: conflicto de identidad, o el conflicto de
+                # url no dejo un producto localizable. Se omite este item
+                # sin abortar el resto de la corrida.
                 return
             es_creacion_nueva = False
         else:
@@ -218,8 +316,8 @@ def guardar_precio_nuevo(db: Session, item: dict, categoria: str):
         # otra corrida del job lo creo entre nuestro chequeo y este
         # flush). Se descarta este intento y se reutiliza el existente en
         # vez de abortar el procesamiento del resto de items.
-        producto = db.query(Producto).filter(Producto.url == item["link"]).first()
-        if not producto:
+        producto, conflicto = _localizar_producto(db, item)
+        if conflicto or not producto:
             return
     else:
         producto = nuevo_producto
@@ -250,7 +348,14 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
         if precio <= 0:
             continue
 
-        producto_db = db.query(Producto).filter(Producto.url == item["link"]).first()
+        producto_db, conflicto = _localizar_producto(db, item)
+        if conflicto:
+            # Identidad en conflicto (misma url, external_id ya registrado
+            # distinto al entrante): se omite el item por completo, sin
+            # actualizar precio, nombre, historial, oferta ni disponibilidad.
+            print(f"  Producto: {item['titulo'][:50]}")
+            print(f"  Conflicto de identidad: se omite el item en esta corrida\n")
+            continue
 
         if disponible_item is False:
             # Explicitamente no disponible: no puede estar en oferta. Se
@@ -282,8 +387,8 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
                     # Carrera: ya existe un Producto con esta misma url.
                     # Se descarta este intento y se actualiza el existente
                     # en vez de abortar el resto de la corrida.
-                    producto_db = db.query(Producto).filter(Producto.url == item["link"]).first()
-                    if not producto_db:
+                    producto_db, conflicto = _localizar_producto(db, item)
+                    if conflicto or not producto_db:
                         continue
                     _actualizar_moneda_si_valida(producto_db, item)
                     _actualizar_external_id_si_valido(producto_db, item)
