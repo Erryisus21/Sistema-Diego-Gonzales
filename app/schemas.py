@@ -18,6 +18,29 @@ class OfertaResponse(BaseModel):
         from_attributes = True
 
 
+class ProductoCatalogoResponse(BaseModel):
+    """Respuesta de GET /busqueda: catálogo completo de Producto, sin
+    filtrar por vigencia ni disponibilidad (eso es responsabilidad de
+    GET /ofertas). precio_actual/precio_original/moneda/disponible pueden
+    ser None en productos legacy o incompletos; disponible=False es un
+    valor válido que el frontend debe poder mostrar, no ocultar."""
+    id: int
+    external_id: str | None
+    nombre: str
+    url: str
+    imagen_url: str | None
+    tienda: str
+    categoria: str | None
+    precio_actual: float | None
+    precio_original: float | None
+    moneda: str | None
+    disponible: bool | None
+    fecha_actualizacion: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class UsuarioRegistro(BaseModel):
     nombre: str
     email: EmailStr
