@@ -1,9 +1,12 @@
+from urllib.parse import urlparse
+
 from app.productos import PRODUCTOS
 from app.scrapers.ebay import scraper_ebay
 from app.scrapers.etsy import scraper_etsy
 from app.services.precios import obtener_precio_promedio, guardar_precio, VENTANA_OFERTAS_DIAS
 from app.database import SessionLocal
 from app.models import Producto, Oferta
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -14,6 +17,28 @@ SCRAPERS = [
     ("eBay", scraper_ebay),
     ("Etsy", scraper_etsy),
 ]
+
+
+def _url_valida(url) -> bool:
+    """Valida que `url` sea segura para usarse como Producto.url: un string
+    no vacio (ni solo espacios en blanco) que represente una URL absoluta
+    con esquema http o https, netloc no vacio y un hostname parseable. No
+    normaliza ni modifica el valor -- solo determina si es seguro guardarlo
+    tal cual llega del marketplace/scraper; una URL relativa, vacia, en
+    blanco, con otro esquema (ftp, javascript, mailto, etc.) o con una
+    autoridad malformada (p. ej. puerto invalido) se considera invalida.
+
+    `partes.hostname` (a diferencia de `partes.netloc`) ya excluye
+    userinfo/puerto y puede lanzar ValueError con una autoridad malformada;
+    por eso se accede dentro del mismo try/except que urlparse()."""
+    if not isinstance(url, str) or not url.strip():
+        return False
+    try:
+        partes = urlparse(url)
+        host = partes.hostname
+    except ValueError:
+        return False
+    return partes.scheme in ("http", "https") and bool(partes.netloc) and bool(host)
 
 
 def _actualizar_precio_original_si_valido(producto: Producto, item: dict) -> None:
@@ -64,10 +89,10 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
     """
     producto = db.query(Producto).filter(Producto.url == item["link"]).first()
     moneda_item = item.get("moneda")
+    es_creacion_nueva = producto is None
 
-    if not producto:
-        precio_anterior = None
-        producto = Producto(
+    if es_creacion_nueva:
+        nuevo_producto = Producto(
             nombre=item["titulo"],
             url=item["link"],
             imagen_url=item.get("imagen"),
@@ -79,8 +104,32 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
             disponible=item.get("disponible"),
             fecha_actualizacion=datetime.utcnow(),
         )
-        db.add(producto)
-        db.flush()
+        try:
+            # SAVEPOINT (begin_nested, portable entre SQLite y PostgreSQL):
+            # si el flush falla, SOLO se deshace esta insercion, sin tocar
+            # ningun cambio ya pendiente de otros items en la misma
+            # transaccion/sesion -- a diferencia de un db.rollback() a
+            # nivel de sesion, que descartaria TODO lo pendiente.
+            with db.begin_nested():
+                db.add(nuevo_producto)
+                db.flush()
+        except IntegrityError:
+            # Carrera con otro proceso/corrida que ya inserto un Producto
+            # con esta misma url (UNIQUE) entre nuestro SELECT y este
+            # flush. Se descarta nuestro intento (sin duplicar) y se
+            # continua con el que ya existe, igual que si hubieramos
+            # entrado por la rama de "producto existente" desde el inicio.
+            producto = db.query(Producto).filter(Producto.url == item["link"]).first()
+            if not producto:
+                # Defensivo: el conflicto no dejo un producto localizable.
+                # Se omite este item sin abortar el resto de la corrida.
+                return
+            es_creacion_nueva = False
+        else:
+            producto = nuevo_producto
+
+    if es_creacion_nueva:
+        precio_anterior = None
     else:
         # Capturar el precio real inmediatamente anterior ANTES de
         # sobreescribirlo: es la base para decidir si este es un evento de
@@ -129,7 +178,7 @@ def guardar_precio_nuevo(db: Session, item: dict, categoria: str):
     scraper entrego un valor real en el item; si no, quedan en None (no se
     inventan)."""
     moneda_item = item.get("moneda")
-    producto = Producto(
+    nuevo_producto = Producto(
         nombre=item["titulo"],
         url=item["link"],
         imagen_url=item.get("imagen"),
@@ -141,8 +190,23 @@ def guardar_precio_nuevo(db: Session, item: dict, categoria: str):
         disponible=item.get("disponible"),
         fecha_actualizacion=datetime.utcnow(),
     )
-    db.add(producto)
-    db.flush()
+    try:
+        # SAVEPOINT (begin_nested): el rollback ante conflicto queda
+        # acotado a esta insercion, sin descartar cambios pendientes de
+        # otros items en la misma transaccion/sesion.
+        with db.begin_nested():
+            db.add(nuevo_producto)
+            db.flush()
+    except IntegrityError:
+        # Carrera: ya existe un Producto con esta misma url (por ejemplo,
+        # otra corrida del job lo creo entre nuestro chequeo y este
+        # flush). Se descarta este intento y se reutiliza el existente en
+        # vez de abortar el procesamiento del resto de items.
+        producto = db.query(Producto).filter(Producto.url == item["link"]).first()
+        if not producto:
+            return
+    else:
+        producto = nuevo_producto
     guardar_precio(db, producto.id, item["precio"], moneda=moneda_item)
     db.commit()
 
@@ -150,6 +214,18 @@ def guardar_precio_nuevo(db: Session, item: dict, categoria: str):
 def procesar_resultados(db: Session, resultados: list, categoria: str):
     """Procesa los resultados de cualquier scraper y detecta ofertas."""
     for item in resultados:
+        link = item.get("link")
+        if not _url_valida(link):
+            # URL ausente, vacia, en blanco, relativa o con esquema no
+            # http/https: no es segura para usarse como Producto.url. Se
+            # omite este item por completo (no se busca ni se crea
+            # Producto, HistorialPrecio ni Oferta) sin abortar el resto de
+            # la corrida.
+            titulo = item.get("titulo", "?")
+            print(f"  Producto: {str(titulo)[:50]}")
+            print(f"  URL invalida u omitida ({link!r}): se descarta el item\n")
+            continue
+
         precio = item.get("precio", 0)
         precio_original_item = item.get("precio_original")
         moneda_item = item.get("moneda")
@@ -166,7 +242,7 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
             # del producto pero no se calcula descuento ni se toca su
             # historial de precios (ese precio ya no es uno real de compra).
             if not producto_db:
-                producto_db = Producto(
+                nuevo_producto = Producto(
                     nombre=item["titulo"],
                     url=item["link"],
                     imagen_url=item.get("imagen"),
@@ -178,7 +254,25 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
                     disponible=False,
                     fecha_actualizacion=datetime.utcnow(),
                 )
-                db.add(producto_db)
+                try:
+                    # SAVEPOINT (begin_nested): acota el rollback a esta
+                    # insercion, sin descartar cambios pendientes de otros
+                    # items en la misma transaccion/sesion.
+                    with db.begin_nested():
+                        db.add(nuevo_producto)
+                        db.flush()
+                except IntegrityError:
+                    # Carrera: ya existe un Producto con esta misma url.
+                    # Se descarta este intento y se actualiza el existente
+                    # en vez de abortar el resto de la corrida.
+                    producto_db = db.query(Producto).filter(Producto.url == item["link"]).first()
+                    if not producto_db:
+                        continue
+                    _actualizar_moneda_si_valida(producto_db, item)
+                    producto_db.disponible = False
+                    producto_db.fecha_actualizacion = datetime.utcnow()
+                else:
+                    producto_db = nuevo_producto
             else:
                 _actualizar_moneda_si_valida(producto_db, item)
                 producto_db.disponible = False

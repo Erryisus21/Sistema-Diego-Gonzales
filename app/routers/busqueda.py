@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_, func
+from sqlalchemy import or_, func, desc
 from datetime import datetime, timedelta
 from app.database import get_db
 from app.models import Producto, Oferta
@@ -27,15 +27,47 @@ def buscar_ofertas(
     # disponible=None siguen visibles mientras cumplan las demás reglas de
     # vigencia (regla de transición mientras no todas las integraciones
     # reporten disponibilidad).
+    # SOLO condiciones que determinan si una fila de Oferta representa el
+    # estado REAL vigente del producto (ver comentario detallado en
+    # GET /ofertas). La búsqueda textual es un filtro de presentación y se
+    # aplica DESPUÉS de la deduplicación, no aquí: si entrara aquí, una
+    # fila histórica más antigua del mismo producto podría "ganar" el
+    # ranking solo por coincidir con el texto de forma distinta a la
+    # oferta realmente vigente (aunque en la práctica nombre/categoria/
+    # tienda no cambian entre filas del mismo producto, se mantiene la
+    # misma separación de responsabilidades que en /ofertas).
+    condiciones_vigencia = [
+        Producto.fecha_actualizacion >= limite_vigencia,
+        Producto.precio_actual.isnot(None),
+        func.abs(Oferta.precio_actual - Producto.precio_actual) < 0.005,
+        Producto.disponible.isnot(False),
+    ]
+
+    # row_number() (portable entre SQLite y PostgreSQL): una sola fila por
+    # producto_id, la de fecha_detectada más reciente (id DESC de
+    # desempate), ANTES de aplicar la búsqueda textual, ordenar o limitar.
+    ranking = (
+        db.query(
+            Oferta.id.label("oferta_id"),
+            func.row_number()
+            .over(
+                partition_by=Oferta.producto_id,
+                order_by=(desc(Oferta.fecha_detectada), desc(Oferta.id)),
+            )
+            .label("rn"),
+        )
+        .join(Producto, Oferta.producto_id == Producto.id)
+        .filter(*condiciones_vigencia)
+        .subquery()
+    )
+
     resultados = (
         db.query(Oferta)
         .join(Producto)
         .options(joinedload(Oferta.producto))
+        .join(ranking, ranking.c.oferta_id == Oferta.id)
+        .filter(ranking.c.rn == 1)
         .filter(
-            Producto.fecha_actualizacion >= limite_vigencia,
-            Producto.precio_actual.isnot(None),
-            func.abs(Oferta.precio_actual - Producto.precio_actual) < 0.005,
-            Producto.disponible.isnot(False),
             or_(
                 Producto.nombre.ilike(f"%{q}%"),
                 Producto.categoria.ilike(f"%{q}%"),

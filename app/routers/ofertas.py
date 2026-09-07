@@ -38,16 +38,57 @@ def listar_ofertas(
     # disponible=None (sin dato, porque la fuente no lo informa) siguen
     # visibles mientras cumplan las demás reglas de vigencia — regla de
     # transición mientras no todas las integraciones reporten disponibilidad.
+    # SOLO las condiciones que determinan si una fila de Oferta representa
+    # el estado REAL vigente del producto ahora mismo. Deliberadamente NO
+    # incluye filtros de presentación (descuento_minimo, categoria, tienda):
+    # si esos entraran aquí, una fila histórica más antigua podría "ganar"
+    # el ranking solo porque cumple un filtro que la oferta realmente
+    # vigente (la más reciente) no cumple -- p. ej. la vigente bajó a 10%
+    # de descuento pero una vieja tenía 40%; con descuento_minimo=20 la
+    # vieja no debe "resucitar" solo por pasar ese filtro en la subconsulta.
+    condiciones_vigencia = [
+        Producto.fecha_actualizacion >= limite_vigencia,
+        Producto.precio_actual.isnot(None),
+        func.abs(Oferta.precio_actual - Producto.precio_actual) < 0.005,
+        Producto.disponible.isnot(False),
+    ]
+
+    # Entre las filas vigentes de arriba puede haber más de una para el
+    # mismo producto: la deduplicación de eventos en guardar_oferta_db
+    # permite intencionalmente un segundo evento de Oferta aunque su precio
+    # coincida con uno histórico (p. ej. baja->sube->misma baja), y ambas
+    # filas pueden coincidir con Producto.precio_actual al mismo tiempo.
+    # row_number() (portable entre SQLite 3.25+ y PostgreSQL) numera las
+    # filas vigentes de cada producto_id de más reciente a más antigua
+    # (fecha_detectada DESC, id DESC como desempate determinista) y solo
+    # nos quedamos con la #1 de cada producto, ANTES de aplicar filtros de
+    # presentación, ordenar o paginar.
+    ranking = (
+        db.query(
+            Oferta.id.label("oferta_id"),
+            func.row_number()
+            .over(
+                partition_by=Oferta.producto_id,
+                order_by=(desc(Oferta.fecha_detectada), desc(Oferta.id)),
+            )
+            .label("rn"),
+        )
+        .join(Producto, Oferta.producto_id == Producto.id)
+        .filter(*condiciones_vigencia)
+        .subquery()
+    )
+
+    # A partir de aquí, exactamente una fila de Oferta por producto (la
+    # vigente más reciente). Los filtros de presentación se aplican DESPUÉS
+    # de la deduplicación, sobre esa única fila: si no cumple, el producto
+    # simplemente no aparece (no se sustituye por una fila vieja distinta).
     query = (
         db.query(Oferta)
         .join(Producto)
         .options(joinedload(Oferta.producto))
-        .filter(
-            Producto.fecha_actualizacion >= limite_vigencia,
-            Producto.precio_actual.isnot(None),
-            func.abs(Oferta.precio_actual - Producto.precio_actual) < 0.005,
-            Producto.disponible.isnot(False),
-        )
+        .join(ranking, ranking.c.oferta_id == Oferta.id)
+        .filter(ranking.c.rn == 1)
+        .filter(Oferta.descuento >= descuento_minimo)
     )
 
     if categoria:
@@ -55,7 +96,6 @@ def listar_ofertas(
     if tienda:
         query = query.filter(Producto.tienda == tienda)
 
-    query = query.filter(Oferta.descuento >= descuento_minimo)
     query = query.order_by(desc(Oferta.descuento))
 
     ofertas = query.offset(skip).limit(limit).all()
