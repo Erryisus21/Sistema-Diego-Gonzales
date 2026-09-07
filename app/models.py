@@ -6,6 +6,15 @@ from app.database import Base
 
 class Producto(Base):
     __tablename__ = "productos"
+    __table_args__ = (
+        # Identidad compuesta para eBay/Etsy (ya normalizan external_id de
+        # forma confiable vía el lookup dual en detectar_ofertas.py).
+        # external_id sigue siendo nullable: NULL nunca colisiona consigo
+        # mismo en SQLite ni PostgreSQL, así que no afecta datos legacy ni
+        # a MercadoLibre/Walmart (que hoy no proveen external_id). url
+        # sigue siendo la clave UNIQUE principal, sin cambios.
+        UniqueConstraint("tienda", "external_id", name="uq_productos_tienda_external_id"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     nombre = Column(String, index=True)
