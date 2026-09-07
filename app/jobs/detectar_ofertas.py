@@ -76,6 +76,19 @@ def _actualizar_disponible_si_valido(producto: Producto, item: dict) -> None:
         producto.disponible = disponible_item
 
 
+def _actualizar_external_id_si_valido(producto: Producto, item: dict) -> None:
+    """Actualiza Producto.external_id solo con el valor real que trae esta
+    lectura (`item['external_id']`, ya normalizado a string no vacio por
+    el scraper: itemId de eBay o listing_id de Etsy). Si esta lectura no
+    trae uno valido, se conserva el que ya hubiera (no se inventa ni se
+    borra por una lectura incompleta). Producto.url sigue siendo la clave
+    efectiva de deduplicacion; external_id es solo un dato informativo
+    hasta que todas las integraciones lo entreguen de forma consistente."""
+    external_id_item = item.get("external_id")
+    if external_id_item:
+        producto.external_id = external_id_item
+
+
 def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento: float, categoria: str):
     """Registra el producto/precio y, si corresponde, un nuevo evento de
     Oferta.
@@ -102,6 +115,7 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
             precio_original=item.get("precio_original"),
             moneda=moneda_item,
             disponible=item.get("disponible"),
+            external_id=item.get("external_id"),
             fecha_actualizacion=datetime.utcnow(),
         )
         try:
@@ -139,6 +153,7 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
         _actualizar_precio_original_si_valido(producto, item)
         _actualizar_moneda_si_valida(producto, item)
         _actualizar_disponible_si_valido(producto, item)
+        _actualizar_external_id_si_valido(producto, item)
         producto.fecha_actualizacion = datetime.utcnow()
 
     # Se usa la moneda ENTRANTE de este resultado (moneda_item), no
@@ -174,9 +189,9 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
 def guardar_precio_nuevo(db: Session, item: dict, categoria: str):
     """Registra un producto nuevo con su primer precio historico.
 
-    Producto.precio_original, moneda y disponible solo se llenan si el
-    scraper entrego un valor real en el item; si no, quedan en None (no se
-    inventan)."""
+    Producto.precio_original, moneda, disponible y external_id solo se
+    llenan si el scraper entrego un valor real en el item; si no, quedan
+    en None (no se inventan)."""
     moneda_item = item.get("moneda")
     nuevo_producto = Producto(
         nombre=item["titulo"],
@@ -188,6 +203,7 @@ def guardar_precio_nuevo(db: Session, item: dict, categoria: str):
         precio_original=item.get("precio_original"),
         moneda=moneda_item,
         disponible=item.get("disponible"),
+        external_id=item.get("external_id"),
         fecha_actualizacion=datetime.utcnow(),
     )
     try:
@@ -252,6 +268,7 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
                     precio_original=item.get("precio_original"),
                     moneda=moneda_item,
                     disponible=False,
+                    external_id=item.get("external_id"),
                     fecha_actualizacion=datetime.utcnow(),
                 )
                 try:
@@ -269,12 +286,14 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
                     if not producto_db:
                         continue
                     _actualizar_moneda_si_valida(producto_db, item)
+                    _actualizar_external_id_si_valido(producto_db, item)
                     producto_db.disponible = False
                     producto_db.fecha_actualizacion = datetime.utcnow()
                 else:
                     producto_db = nuevo_producto
             else:
                 _actualizar_moneda_si_valida(producto_db, item)
+                _actualizar_external_id_si_valido(producto_db, item)
                 producto_db.disponible = False
                 producto_db.fecha_actualizacion = datetime.utcnow()
             db.commit()
@@ -321,6 +340,7 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
                 _actualizar_precio_original_si_valido(producto_db, item)
                 _actualizar_moneda_si_valida(producto_db, item)
                 _actualizar_disponible_si_valido(producto_db, item)
+                _actualizar_external_id_si_valido(producto_db, item)
                 producto_db.fecha_actualizacion = datetime.utcnow()
                 db.commit()
             print(f"  Producto: {item['titulo'][:50]}")
@@ -342,6 +362,7 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
                 _actualizar_precio_original_si_valido(producto_db, item)
                 _actualizar_moneda_si_valida(producto_db, item)
                 _actualizar_disponible_si_valido(producto_db, item)
+                _actualizar_external_id_si_valido(producto_db, item)
                 producto_db.fecha_actualizacion = datetime.utcnow()
                 db.commit()
             else:

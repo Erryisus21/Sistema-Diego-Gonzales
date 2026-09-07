@@ -63,6 +63,14 @@ def obtener_detalle(producto_id: int, db: Session = Depends(get_db)):
         "imagen_url": producto.imagen_url,
         "tienda": producto.tienda,
         "categoria": producto.categoria,
+        "external_id": producto.external_id,
+        "moneda": producto.moneda,
+        # disponible puede ser True, False o None (sin dato todavia). Un
+        # producto con disponible=False sigue devolviendo su ficha
+        # completa: el frontend decide como mostrar el aviso de "ya no
+        # disponible", no se bloquea el acceso al detalle.
+        "disponible": producto.disponible,
+        "fecha_actualizacion": producto.fecha_actualizacion,
         "precio_actual": precio_actual,
         "precio_original": producto.precio_original,
         "historial": precios_historico,

@@ -17,6 +17,20 @@ API_SECRET = os.getenv("ETSY_API_SECRET")
 API_BASE_URL = "https://openapi.etsy.com/v3"
 
 
+def _normalizar_external_id(valor) -> str | None:
+    """Convierte un identificador crudo del marketplace a string no vacio,
+    o None si esta ausente/vacio.
+
+    Usa `is not None` explicitamente (no una comprobacion de veracidad como
+    `if valor`) para no tratar 0 -- un id numerico valido -- como ausente,
+    y nunca llama a str() sobre un valor None, evitando que se guarde el
+    string literal "None"."""
+    if valor is None:
+        return None
+    texto = str(valor).strip()
+    return texto or None
+
+
 def scraper_etsy(query: str, limite: int = 20) -> list[dict]:
     """
     Busca productos en Etsy usando la API oficial v3.
@@ -36,6 +50,7 @@ def scraper_etsy(query: str, limite: int = 20) -> list[dict]:
                 "tienda": "etsy",
                 "moneda": str | None,      # price.currency_code de la API v3, normalizado
                 "disponible": bool | None, # quantity > 0 del listing
+                "external_id": str | None, # listing_id oficial de la API v3, como string
             }
     """
     productos = []
@@ -72,6 +87,11 @@ def scraper_etsy(query: str, limite: int = 20) -> list[dict]:
             try:
                 titulo = item.get("title", "")
                 listing_id = item.get("listing_id", "")
+
+                # Identificador oficial del listing en la API v3 (se toma
+                # del valor crudo, no de `listing_id` con su default ""
+                # usado abajo para construir el link).
+                external_id = _normalizar_external_id(item.get("listing_id"))
 
                 # Precio actual
                 price_data = item.get("price", {})
@@ -129,6 +149,7 @@ def scraper_etsy(query: str, limite: int = 20) -> list[dict]:
                     "tienda": "etsy",
                     "moneda": moneda,
                     "disponible": disponible,
+                    "external_id": external_id,
                 })
 
             except Exception:

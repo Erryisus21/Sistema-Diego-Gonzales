@@ -91,10 +91,13 @@ def listar_ofertas(
         .filter(Oferta.descuento >= descuento_minimo)
     )
 
+    # ilike (case-insensitive) para que "eBay"/"EBAY"/"ebay" y
+    # "Herramientas"/"herramientas" se comporten igual que en GET /busqueda,
+    # que ya usa ilike para estos mismos campos.
     if categoria:
-        query = query.filter(Producto.categoria == categoria)
+        query = query.filter(Producto.categoria.ilike(categoria))
     if tienda:
-        query = query.filter(Producto.tienda == tienda)
+        query = query.filter(Producto.tienda.ilike(tienda))
 
     query = query.order_by(desc(Oferta.descuento))
 

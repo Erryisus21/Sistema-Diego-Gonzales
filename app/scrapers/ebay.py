@@ -21,6 +21,20 @@ API_BASE_URL = "https://api.ebay.com/buy/browse/v1"
 _access_token = None
 
 
+def _normalizar_external_id(valor) -> str | None:
+    """Convierte un identificador crudo del marketplace a string no vacio,
+    o None si esta ausente/vacio.
+
+    Usa `is not None` explicitamente (no una comprobacion de veracidad como
+    `if valor`) para no tratar 0 -- un id numerico valido -- como ausente,
+    y nunca llama a str() sobre un valor None, evitando que se guarde el
+    string literal "None"."""
+    if valor is None:
+        return None
+    texto = str(valor).strip()
+    return texto or None
+
+
 def _obtener_token_acceso() -> str:
     """
     Obtiene un token de acceso OAuth2 para la API de eBay.
@@ -72,6 +86,7 @@ def scraper_ebay(query: str, limite: int = 20) -> list[dict]:
                 "tienda": "ebay",
                 "moneda": str | None,      # price.currency de la Browse API, normalizado
                 "disponible": bool | None, # estimatedAvailabilities[].estimatedAvailabilityStatus
+                "external_id": str | None, # itemId oficial de la Browse API, como string
             }
     """
     productos = []
@@ -105,6 +120,11 @@ def scraper_ebay(query: str, limite: int = 20) -> list[dict]:
             try:
                 titulo = item.get("title", "")
                 link = item.get("itemWebUrl", "")
+
+                # Identificador oficial del item en la Browse API. Se
+                # convierte a string no vacio; si no viene o queda vacio
+                # tras convertir, se deja en None (no se inventa).
+                external_id = _normalizar_external_id(item.get("itemId"))
 
                 # Precio actual
                 price_data = item.get("price", {})
@@ -157,6 +177,7 @@ def scraper_ebay(query: str, limite: int = 20) -> list[dict]:
                     "tienda": "ebay",
                     "moneda": moneda,
                     "disponible": disponible,
+                    "external_id": external_id,
                 })
 
             except Exception:
