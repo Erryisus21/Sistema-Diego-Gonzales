@@ -89,6 +89,47 @@ def _actualizar_external_id_si_valido(producto: Producto, item: dict) -> None:
         producto.external_id = external_id_item
 
 
+def _item_tiene_campos_minimos(item) -> bool:
+    """Valida el contrato minimo que procesar_resultados() necesita para
+    poder procesar un item de cualquier scraper, sin introducir un
+    dataclass/Pydantic: es un predicado puro de solo lectura, no modifica
+    `item` ni le agrega valores.
+
+    Campos obligatorios y su criterio de validez:
+      - titulo: string no vacio tras strip().
+      - precio: convertible a float y mayor que 0.
+      - link: pasa _url_valida() (URL absoluta http/https con host real).
+      - tienda: string no vacio tras strip(). NUNCA se asume un valor por
+        defecto: si la integracion no la provee, el item se descarta -- no
+        se le asigna "mercadolibre" ni ninguna otra tienda por conveniencia.
+
+    precio_original, imagen, moneda, disponible y external_id son
+    opcionales (pueden faltar o ser None) y no se validan aqui.
+    """
+    if not isinstance(item, dict):
+        return False
+
+    titulo = item.get("titulo")
+    if not isinstance(titulo, str) or not titulo.strip():
+        return False
+
+    precio = item.get("precio")
+    try:
+        if float(precio) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    if not _url_valida(item.get("link")):
+        return False
+
+    tienda = item.get("tienda")
+    if not isinstance(tienda, str) or not tienda.strip():
+        return False
+
+    return True
+
+
 def _localizar_producto(db: Session, item: dict) -> tuple[Producto | None, bool]:
     """Punto UNICO de resolucion de identidad de Producto para un item,
     usado por todos los lookups iniciales del pipeline.
@@ -206,7 +247,7 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
             nombre=item["titulo"],
             url=item["link"],
             imagen_url=item.get("imagen"),
-            tienda=item.get("tienda", "mercadolibre"),
+            tienda=item.get("tienda"),
             categoria=categoria,
             precio_actual=item["precio"],
             precio_original=item.get("precio_original"),
@@ -295,7 +336,7 @@ def guardar_precio_nuevo(db: Session, item: dict, categoria: str):
         nombre=item["titulo"],
         url=item["link"],
         imagen_url=item.get("imagen"),
-        tienda=item.get("tienda", "mercadolibre"),
+        tienda=item.get("tienda"),
         categoria=categoria,
         precio_actual=item["precio"],
         precio_original=item.get("precio_original"),
@@ -328,25 +369,20 @@ def guardar_precio_nuevo(db: Session, item: dict, categoria: str):
 def procesar_resultados(db: Session, resultados: list, categoria: str):
     """Procesa los resultados de cualquier scraper y detecta ofertas."""
     for item in resultados:
-        link = item.get("link")
-        if not _url_valida(link):
-            # URL ausente, vacia, en blanco, relativa o con esquema no
-            # http/https: no es segura para usarse como Producto.url. Se
-            # omite este item por completo (no se busca ni se crea
-            # Producto, HistorialPrecio ni Oferta) sin abortar el resto de
-            # la corrida.
-            titulo = item.get("titulo", "?")
-            print(f"  Producto: {str(titulo)[:50]}")
-            print(f"  URL invalida u omitida ({link!r}): se descarta el item\n")
+        if not _item_tiene_campos_minimos(item):
+            # Contrato minimo incumplido (titulo, precio, link o tienda
+            # ausentes o invalidos): se omite el item por completo -- no se
+            # busca ni se crea Producto, HistorialPrecio ni Oferta -- sin
+            # abortar el resto de la corrida.
+            titulo_dbg = item.get("titulo", "?") if isinstance(item, dict) else "?"
+            print(f"  Producto: {str(titulo_dbg)[:50]}")
+            print(f"  Item invalido (titulo/precio/link/tienda ausente o invalido): se descarta\n")
             continue
 
-        precio = item.get("precio", 0)
+        precio = float(item["precio"])
         precio_original_item = item.get("precio_original")
         moneda_item = item.get("moneda")
         disponible_item = item.get("disponible")
-
-        if precio <= 0:
-            continue
 
         producto_db, conflicto = _localizar_producto(db, item)
         if conflicto:
@@ -367,7 +403,7 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
                     nombre=item["titulo"],
                     url=item["link"],
                     imagen_url=item.get("imagen"),
-                    tienda=item.get("tienda", "mercadolibre"),
+                    tienda=item.get("tienda"),
                     categoria=categoria,
                     precio_actual=precio,
                     precio_original=item.get("precio_original"),
