@@ -33,7 +33,9 @@ def scraper_etsy(query: str, limite: int = 20) -> list[dict]:
                 "precio_original": float | None,
                 "imagen": str | None,
                 "link": str,
-                "tienda": "etsy"
+                "tienda": "etsy",
+                "moneda": str | None,      # price.currency_code de la API v3, normalizado
+                "disponible": bool | None, # quantity > 0 del listing
             }
     """
     productos = []
@@ -79,8 +81,11 @@ def scraper_etsy(query: str, limite: int = 20) -> list[dict]:
                 if precio <= 0:
                     continue
 
-                # Divisor de moneda
-                currency = price_data.get("currency_code", "USD")
+                # Moneda real entregada por la API v3 (price.currency_code),
+                # normalizada. No se inventa una moneda (ni se asume USD)
+                # si la respuesta no la trae: se deja en None.
+                currency = price_data.get("currency_code")
+                moneda = currency.strip().upper() if currency else None
 
                 # Etsy no suele tener "precio original/tachado" directamente
                 # Pero podemos ver si "original_price" existe
@@ -90,6 +95,15 @@ def scraper_etsy(query: str, limite: int = 20) -> list[dict]:
                         precio_original = float(item["original_price"]["amount"])
                     except:
                         pass
+
+                # Disponibilidad: Etsy informa la cantidad disponible en
+                # 'quantity' para los listados devueltos (activos). Si el
+                # campo no viene o no es un entero, se deja en None (nunca
+                # se asume True).
+                disponible = None
+                cantidad = item.get("quantity")
+                if isinstance(cantidad, int):
+                    disponible = cantidad > 0
 
                 # URL del producto
                 shop_name = item.get("shop", {}).get("shop_name", "shop")
@@ -113,6 +127,8 @@ def scraper_etsy(query: str, limite: int = 20) -> list[dict]:
                     "imagen": imagen,
                     "link": link,
                     "tienda": "etsy",
+                    "moneda": moneda,
+                    "disponible": disponible,
                 })
 
             except Exception:

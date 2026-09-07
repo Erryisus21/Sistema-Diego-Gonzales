@@ -31,6 +31,26 @@ def _actualizar_precio_original_si_valido(producto: Producto, item: dict) -> Non
         producto.precio_original = precio_original_item
 
 
+def _actualizar_moneda_si_valida(producto: Producto, item: dict) -> None:
+    """Actualiza Producto.moneda solo con el valor real que trae esta
+    lectura (`item['moneda']`, ya normalizado por el scraper con
+    strip().upper()). Si la fuente no informa moneda en esta corrida, se
+    conserva la que ya hubiera; nunca se limpia por una lectura incompleta."""
+    moneda_item = item.get("moneda")
+    if moneda_item:
+        producto.moneda = moneda_item
+
+
+def _actualizar_disponible_si_valido(producto: Producto, item: dict) -> None:
+    """Actualiza Producto.disponible solo cuando el item trae un booleano
+    explicito (True o False). A diferencia de moneda/precio_original, aqui
+    se usa `is not None` porque False es un valor valido y significativo
+    (no debe tratarse como "sin dato")."""
+    disponible_item = item.get("disponible")
+    if disponible_item is not None:
+        producto.disponible = disponible_item
+
+
 def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento: float, categoria: str):
     """Registra el producto/precio y, si corresponde, un nuevo evento de
     Oferta.
@@ -38,8 +58,12 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
     `precio_promedio` es el precio de referencia (historico o tachado)
     usado unicamente para calcular el descuento; se guarda en
     Oferta.precio_promedio y NUNCA se escribe en Producto.precio_original.
+    Solo se llama cuando ya se determino que el producto esta disponible
+    (o no se sabe con certeza); el llamador (procesar_resultados) filtra
+    el caso disponible=False antes de llegar aqui.
     """
     producto = db.query(Producto).filter(Producto.url == item["link"]).first()
+    moneda_item = item.get("moneda")
 
     if not producto:
         precio_anterior = None
@@ -51,6 +75,8 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
             categoria=categoria,
             precio_actual=item["precio"],
             precio_original=item.get("precio_original"),
+            moneda=moneda_item,
+            disponible=item.get("disponible"),
             fecha_actualizacion=datetime.utcnow(),
         )
         db.add(producto)
@@ -62,9 +88,15 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
         precio_anterior = producto.precio_actual
         producto.precio_actual = item["precio"]
         _actualizar_precio_original_si_valido(producto, item)
+        _actualizar_moneda_si_valida(producto, item)
+        _actualizar_disponible_si_valido(producto, item)
         producto.fecha_actualizacion = datetime.utcnow()
 
-    guardar_precio(db, producto.id, item["precio"], moneda=producto.moneda)
+    # Se usa la moneda ENTRANTE de este resultado (moneda_item), no
+    # producto.moneda: si la fuente cambia de moneda entre corridas, el
+    # historial nuevo debe registrarse bajo la moneda actual y no bajo una
+    # moneda vieja que ya no corresponde a este precio.
+    guardar_precio(db, producto.id, item["precio"], moneda=moneda_item)
 
     # Nuevo evento de Oferta solo si el precio REAL anterior del producto
     # (capturado arriba, antes de sobreescribirlo) difiere del precio
@@ -93,8 +125,10 @@ def guardar_oferta_db(db: Session, item: dict, precio_promedio: float, descuento
 def guardar_precio_nuevo(db: Session, item: dict, categoria: str):
     """Registra un producto nuevo con su primer precio historico.
 
-    Producto.precio_original solo se llena si el scraper entrego un valor
-    real en `item['precio_original']`."""
+    Producto.precio_original, moneda y disponible solo se llenan si el
+    scraper entrego un valor real en el item; si no, quedan en None (no se
+    inventan)."""
+    moneda_item = item.get("moneda")
     producto = Producto(
         nombre=item["titulo"],
         url=item["link"],
@@ -103,11 +137,13 @@ def guardar_precio_nuevo(db: Session, item: dict, categoria: str):
         categoria=categoria,
         precio_actual=item["precio"],
         precio_original=item.get("precio_original"),
+        moneda=moneda_item,
+        disponible=item.get("disponible"),
         fecha_actualizacion=datetime.utcnow(),
     )
     db.add(producto)
     db.flush()
-    guardar_precio(db, producto.id, item["precio"], moneda=producto.moneda)
+    guardar_precio(db, producto.id, item["precio"], moneda=moneda_item)
     db.commit()
 
 
@@ -116,20 +152,54 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
     for item in resultados:
         precio = item.get("precio", 0)
         precio_original_item = item.get("precio_original")
+        moneda_item = item.get("moneda")
+        disponible_item = item.get("disponible")
 
         if precio <= 0:
             continue
 
         producto_db = db.query(Producto).filter(Producto.url == item["link"]).first()
 
+        if disponible_item is False:
+            # Explicitamente no disponible: no puede estar en oferta. Se
+            # actualiza el estado (disponible/moneda/fecha_actualizacion)
+            # del producto pero no se calcula descuento ni se toca su
+            # historial de precios (ese precio ya no es uno real de compra).
+            if not producto_db:
+                producto_db = Producto(
+                    nombre=item["titulo"],
+                    url=item["link"],
+                    imagen_url=item.get("imagen"),
+                    tienda=item.get("tienda", "mercadolibre"),
+                    categoria=categoria,
+                    precio_actual=precio,
+                    precio_original=item.get("precio_original"),
+                    moneda=moneda_item,
+                    disponible=False,
+                    fecha_actualizacion=datetime.utcnow(),
+                )
+                db.add(producto_db)
+            else:
+                _actualizar_moneda_si_valida(producto_db, item)
+                producto_db.disponible = False
+                producto_db.fecha_actualizacion = datetime.utcnow()
+            db.commit()
+            print(f"  Producto: {item['titulo'][:50]}")
+            print(f"  No disponible: se omite deteccion de oferta\n")
+            continue
+
         # Prioridad 1: promedio historico real (cuando haya varias lecturas).
-        # Misma ventana (VENTANA_OFERTAS_DIAS) que usan las estadisticas de
-        # producto en GET /producto/{id}, para que el descuento detectado
-        # aqui sea consistente con lo que ve el usuario en el detalle.
+        # Se consulta con la moneda ENTRANTE de este resultado (moneda_item),
+        # no con producto_db.moneda: si la fuente cambia de moneda entre
+        # corridas, comparar contra un historial guardado bajo la moneda
+        # vieja mezclaria precios incompatibles. Misma ventana
+        # (VENTANA_OFERTAS_DIAS) que usan las estadisticas de producto en
+        # GET /producto/{id}, para que el descuento detectado aqui sea
+        # consistente con lo que ve el usuario en el detalle.
         promedio_historico = None
         if producto_db:
             promedio_historico = obtener_precio_promedio(
-                db, producto_db.id, dias=VENTANA_OFERTAS_DIAS, moneda=producto_db.moneda
+                db, producto_db.id, dias=VENTANA_OFERTAS_DIAS, moneda=moneda_item
             )
 
         # Decidir que usar como "precio de referencia"
@@ -151,10 +221,12 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
             if not producto_db:
                 guardar_precio_nuevo(db, item, categoria)
             else:
-                guardar_precio(db, producto_db.id, precio, moneda=producto_db.moneda)
+                guardar_precio(db, producto_db.id, precio, moneda=moneda_item)
                 # Actualizar precio actual del producto aunque no sea oferta
                 producto_db.precio_actual = precio
                 _actualizar_precio_original_si_valido(producto_db, item)
+                _actualizar_moneda_si_valida(producto_db, item)
+                _actualizar_disponible_si_valido(producto_db, item)
                 producto_db.fecha_actualizacion = datetime.utcnow()
                 db.commit()
             print(f"  Producto: {item['titulo'][:50]}")
@@ -171,9 +243,11 @@ def procesar_resultados(db: Session, resultados: list, categoria: str):
             guardar_oferta_db(db, item, promedio, descuento, categoria)
         else:
             if producto_db:
-                guardar_precio(db, producto_db.id, precio, moneda=producto_db.moneda)
+                guardar_precio(db, producto_db.id, precio, moneda=moneda_item)
                 producto_db.precio_actual = precio
                 _actualizar_precio_original_si_valido(producto_db, item)
+                _actualizar_moneda_si_valida(producto_db, item)
+                _actualizar_disponible_si_valido(producto_db, item)
                 producto_db.fecha_actualizacion = datetime.utcnow()
                 db.commit()
             else:

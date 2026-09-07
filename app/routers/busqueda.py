@@ -21,6 +21,12 @@ def buscar_ofertas(
     # producto observado dentro de la tolerancia de vigencia. Se filtra en
     # SQL, no en Python, para que el limit(50) recorte sobre el conjunto ya
     # vigente y no descarte filas después de haber limitado la página.
+    #
+    # Producto.disponible.isnot(False) excluye únicamente los productos
+    # marcados explícitamente como no disponibles; los legacy/actuales con
+    # disponible=None siguen visibles mientras cumplan las demás reglas de
+    # vigencia (regla de transición mientras no todas las integraciones
+    # reporten disponibilidad).
     resultados = (
         db.query(Oferta)
         .join(Producto)
@@ -29,6 +35,7 @@ def buscar_ofertas(
             Producto.fecha_actualizacion >= limite_vigencia,
             Producto.precio_actual.isnot(None),
             func.abs(Oferta.precio_actual - Producto.precio_actual) < 0.005,
+            Producto.disponible.isnot(False),
             or_(
                 Producto.nombre.ilike(f"%{q}%"),
                 Producto.categoria.ilike(f"%{q}%"),

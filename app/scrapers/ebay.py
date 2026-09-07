@@ -69,7 +69,9 @@ def scraper_ebay(query: str, limite: int = 20) -> list[dict]:
                 "precio_original": float | None,
                 "imagen": str | None,
                 "link": str,
-                "tienda": "ebay"
+                "tienda": "ebay",
+                "moneda": str | None,      # price.currency de la Browse API, normalizado
+                "disponible": bool | None, # estimatedAvailabilities[].estimatedAvailabilityStatus
             }
     """
     productos = []
@@ -112,6 +114,12 @@ def scraper_ebay(query: str, limite: int = 20) -> list[dict]:
                 if precio <= 0:
                     continue
 
+                # Moneda real entregada por la Browse API (price.currency),
+                # normalizada. No se inventa una moneda si la respuesta no
+                # la trae: se deja en None.
+                moneda = price_data.get("currency")
+                moneda = moneda.strip().upper() if moneda else None
+
                 # Precio original (si aplica descuento)
                 precio_original = None
                 if "strikethroughPrice" in item:
@@ -119,6 +127,20 @@ def scraper_ebay(query: str, limite: int = 20) -> list[dict]:
                         precio_original = float(item["strikethroughPrice"].get("value", 0))
                     except:
                         pass
+
+                # Disponibilidad: solo si la Browse API la informa
+                # explicitamente via estimatedAvailabilities[].
+                # estimatedAvailabilityStatus (no siempre presente en los
+                # resultados de busqueda). Si no viene o el valor no es uno
+                # de los reconocidos, se deja en None (nunca se asume True).
+                disponible = None
+                estimaciones = item.get("estimatedAvailabilities")
+                if estimaciones:
+                    estado = estimaciones[0].get("estimatedAvailabilityStatus")
+                    if estado == "OUT_OF_STOCK":
+                        disponible = False
+                    elif estado in ("IN_STOCK", "LIMITED_STOCK"):
+                        disponible = True
 
                 # Imagen
                 imagen = None
@@ -133,6 +155,8 @@ def scraper_ebay(query: str, limite: int = 20) -> list[dict]:
                     "imagen": imagen,
                     "link": link,
                     "tienda": "ebay",
+                    "moneda": moneda,
+                    "disponible": disponible,
                 })
 
             except Exception:

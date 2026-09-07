@@ -32,6 +32,12 @@ def listar_ofertas(
     # (no en Python) para que offset/limit paginen sobre el conjunto ya
     # vigente y no se pierdan filas por descartar registros no vigentes
     # después de recortar la página.
+    #
+    # Producto.disponible.isnot(False) excluye únicamente los productos
+    # marcados explícitamente como no disponibles; los legacy/actuales con
+    # disponible=None (sin dato, porque la fuente no lo informa) siguen
+    # visibles mientras cumplan las demás reglas de vigencia — regla de
+    # transición mientras no todas las integraciones reporten disponibilidad.
     query = (
         db.query(Oferta)
         .join(Producto)
@@ -40,6 +46,7 @@ def listar_ofertas(
             Producto.fecha_actualizacion >= limite_vigencia,
             Producto.precio_actual.isnot(None),
             func.abs(Oferta.precio_actual - Producto.precio_actual) < 0.005,
+            Producto.disponible.isnot(False),
         )
     )
 
