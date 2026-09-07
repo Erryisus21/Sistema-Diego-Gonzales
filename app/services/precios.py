@@ -2,6 +2,23 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from app.models import HistorialPrecio
 
+# Ventana histórica estándar (en días) para detección de ofertas
+# (detectar_ofertas.py) y para las estadísticas de producto expuestas en
+# GET /producto/{id}. Debe ser la misma en ambos flujos: si difieren, el
+# descuento detectado en una oferta puede no coincidir con el
+# "porcentaje_vs_promedio" que ve el usuario en el detalle del mismo producto.
+VENTANA_OFERTAS_DIAS = 30
+
+# Tolerancia (en horas) para considerar vigente una oferta en los routers
+# que la exponen (GET /ofertas, GET /busqueda): equivale a dos ciclos del
+# scheduler de detección, que corre cada 6h (IntervalTrigger(hours=6) en
+# app/main.py). Una oferta se considera vigente solo si
+# Producto.fecha_actualizacion cae dentro de esta ventana respecto a
+# "ahora", es decir, si el producto fue observado en la corrida más
+# reciente o, como máximo, en la inmediatamente anterior.
+TOLERANCIA_VIGENCIA_HORAS = 12
+
+
 def _normalizar_moneda(moneda: str | None) -> str | None:
     if moneda is None:
         return None
@@ -12,7 +29,7 @@ def _normalizar_moneda(moneda: str | None) -> str | None:
 def obtener_estadisticas_precio(
     db: Session,
     producto_id: int,
-    dias: int = 30,
+    dias: int = VENTANA_OFERTAS_DIAS,
     moneda: str | None = None,
 ) -> dict:
     """Fuente de verdad centralizada para estadísticas de HistorialPrecio.
@@ -138,7 +155,7 @@ def obtener_cambio_reciente(
 def obtener_precio_promedio(
     db: Session,
     producto_id: int,
-    dias: int = 14,
+    dias: int = VENTANA_OFERTAS_DIAS,
     moneda: str | None = None,
 ) -> float | None:
     """Wrapper compatible sobre obtener_estadisticas_precio(): solo el

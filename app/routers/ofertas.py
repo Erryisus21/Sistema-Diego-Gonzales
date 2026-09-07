@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import desc, func
 from typing import Optional
+from datetime import datetime, timedelta
 from app.database import get_db
 from app.models import Oferta, Producto
+from app.services.precios import TOLERANCIA_VIGENCIA_HORAS
 from app import schemas  # lo creamos después
 
 router = APIRouter(prefix="/ofertas")
@@ -17,7 +19,29 @@ def listar_ofertas(
     limit: int = Query(20, description="Paginación: hasta"),
     db: Session = Depends(get_db)
 ):
-    query = db.query(Oferta).join(Producto)
+    limite_vigencia = datetime.utcnow() - timedelta(hours=TOLERANCIA_VIGENCIA_HORAS)
+
+    # Vigente solo si el precio de la oferta coincide (tolerancia de
+    # centavos, portable entre SQLite y PostgreSQL) con el precio actual
+    # del producto, y el producto fue observado dentro de la tolerancia de
+    # vigencia. No basta con filtrar por Oferta.fecha_detectada: el dedupe
+    # existente (guardar_oferta_db) no crea una fila nueva mientras el
+    # precio no cambie, así que una oferta vigente puede arrastrar una
+    # fecha_detectada antigua aunque el producto se siga observando al
+    # mismo precio en cada corrida del scheduler. Se filtra a nivel SQL
+    # (no en Python) para que offset/limit paginen sobre el conjunto ya
+    # vigente y no se pierdan filas por descartar registros no vigentes
+    # después de recortar la página.
+    query = (
+        db.query(Oferta)
+        .join(Producto)
+        .options(joinedload(Oferta.producto))
+        .filter(
+            Producto.fecha_actualizacion >= limite_vigencia,
+            Producto.precio_actual.isnot(None),
+            func.abs(Oferta.precio_actual - Producto.precio_actual) < 0.005,
+        )
+    )
 
     if categoria:
         query = query.filter(Producto.categoria == categoria)
